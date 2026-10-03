@@ -87,6 +87,40 @@ describe("DEMO_RULE_V1", () => {
     ]);
   });
 
+  describe("fail-closed on unexpected ParticipationLookup values", () => {
+    const weird: unknown[] = [undefined, null, "", "unknown", "Unknown", " UNKNOWN", "PARTICIPATING ", "locked", "NON_PARTICIPATION_LOCKED\n", 0, false, {}, "anything_else"];
+    const lookupReturning = (value: unknown) => ({ getState: () => value as never });
+    const run = (participation: { getState: () => never }) =>
+      evaluateDemoRuleV1({
+        ipoId: "ipo_1",
+        grossCapacityKrw: 30n,
+        exposures: [{ fundId: "fund_b", exposureKrw: 6n }],
+        participation,
+      });
+
+    for (const value of weird) {
+      it(`treats ${JSON.stringify(value) ?? String(value)} as UNKNOWN: undetermined, never exempt`, () => {
+        const r = run(lookupReturning(value));
+        expect(r).toMatchObject({ determined: false, unknownFundIds: ["fund_b"] });
+        expect(r.lines[0]).toMatchObject({ state: "UNKNOWN", treatment: Treatment.UNDETERMINED_UNKNOWN });
+      });
+    }
+
+    it("treats a lookup that throws as UNKNOWN instead of propagating or exempting", () => {
+      const throwing = {
+        getState: (): never => {
+          throw new Error("ledger unavailable");
+        },
+      };
+      expect(run(throwing)).toMatchObject({ determined: false, unknownFundIds: ["fund_b"] });
+    });
+
+    it("still evaluates the exact known states normally", () => {
+      expect(determined(run(lookupReturning("PARTICIPATING"))).adjustedCapacityKrw).toBe(24n);
+      expect(determined(run(lookupReturning("NON_PARTICIPATION_LOCKED"))).adjustedCapacityKrw).toBe(30n);
+    });
+  });
+
   it("clamps at zero and flags when deductions exceed gross", () => {
     const l = ledger();
     l.requestParticipation("fund_b", "ipo_1");
