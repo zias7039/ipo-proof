@@ -212,13 +212,13 @@ describe("verifyBid + EIP-712: a valid signature does not bypass the remaining c
     expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("ATTESTATION_MALFORMED"));
   });
 
-  it("UNKNOWN underlying participation is still deducted conservatively and flagged", async () => {
+  it("UNKNOWN underlying participation is still rejected (never exempt, never assumed)", async () => {
     const e = makeSignedEnv({ recordStates: false }); // fund_b and fund_c are both UNKNOWN
     e.store.publish(await signedAtt());
-    const r = verifyBid(bid(20_000_000_001n), e.deps); // gross 30bn - (6bn + 4bn) = 20bn
-    expect(r).toMatchObject(fail("BID_EXCEEDS_ADJUSTED_CAPACITY"));
-    expect(r.flags).toContain("UNKNOWN_UNDERLYING_DEDUCTED");
-    expect(verifyBid(bid(20_000_000_000n), e.deps).eligible).toBe(true);
+    expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("UNDERLYING_PARTICIPATION_UNKNOWN"));
+    e.ledger.requestParticipation("fund_b", "ipo_1");
+    e.ledger.requestNonParticipationLock("fund_c", "ipo_1");
+    expect(verifyBid(bid(24_000_000_000n), e.deps).eligible).toBe(true);
   });
 
   it("the request still cannot carry a capacity value", async () => {
