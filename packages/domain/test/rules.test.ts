@@ -157,7 +157,8 @@ describe("DEMO_RULE_V1", () => {
 
   it("dispatches by rule version id", () => {
     expect(isSupportedRuleVersion(DEMO_RULE_V1_ID)).toBe(true);
-    expect(isSupportedRuleVersion("DEMO_RULE_V2")).toBe(false);
-    expect(evaluateRule("DEMO_RULE_V2", { ipoId: "ipo_1", grossCapacityKrw: 0n, exposures: [], participation: ledger() })).toBeUndefined();
+    expect(isSupportedRuleVersion("DEMO_RULE_V2")).toBe(true);
+    expect(isSupportedRuleVersion("DEMO_RULE_V3")).toBe(false);
+    expect(evaluateRule("DEMO_RULE_V3", { ipoId: "ipo_1", grossCapacityKrw: 0n, exposures: [], participation: ledger() })).toBeUndefined();
   });
 });

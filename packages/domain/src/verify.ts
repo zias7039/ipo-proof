@@ -7,7 +7,7 @@ import type { Krw } from "./money.js";
 import { ParticipationState } from "./participation.js";
 import type { ParticipationLookup } from "./participation.js";
 import type { FundRegistry, IpoRegistry } from "./registry.js";
-import { evaluateRule, isSupportedRuleVersion } from "./rules.js";
+import { UndeterminedCause, evaluateRule, isSupportedRuleVersion } from "./rules.js";
 import type { RuleFlag } from "./rules.js";
 
 /**
@@ -44,6 +44,8 @@ export const BidReason = {
   UNDERLYING_EXPOSURE_NOT_IN_REGISTRY: "UNDERLYING_EXPOSURE_NOT_IN_REGISTRY",
   /** An underlying fund has no recorded participation (UNKNOWN). Not exempt, not assumed: rejected. */
   UNDERLYING_PARTICIPATION_UNKNOWN: "UNDERLYING_PARTICIPATION_UNKNOWN",
+  /** DEMO_RULE_V2 only: an UNKNOWN underlying fund has 0 KRW exposure, which cannot exist (data error). Takes precedence over the generic UNKNOWN rejection. */
+  UNDERLYING_ZERO_EXPOSURE_UNKNOWN: "UNDERLYING_ZERO_EXPOSURE_UNKNOWN",
   DUPLICATE_UNDERLYING_EXPOSURE: "DUPLICATE_UNDERLYING_EXPOSURE",
   BID_EXCEEDS_ADJUSTED_CAPACITY: "BID_EXCEEDS_ADJUSTED_CAPACITY",
 } as const;
@@ -130,7 +132,7 @@ const REQUEST_KEYS = ["bidAmount", "fundId", "ipoId"];
  *  -> subject's own lock -> attestation present/subject/shape -> rule version match
  *  -> attester authorization + signature (per injected verifier) -> revoked -> validity window
  *  (not-yet-valid / expired / stale) -> nonce replay -> underlying exposure completeness
- *  -> rule evaluation (rejects if any underlying participation is UNKNOWN) -> bid vs adjusted capacity.
+ *  -> rule evaluation (rejects if any underlying participation is UNKNOWN; DEMO_RULE_V2: a 0 KRW UNKNOWN is reported first as a data error) -> bid vs adjusted capacity.
  */
 export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerification {
   const verifiedAt = deps.clock.now();
@@ -243,7 +245,13 @@ export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerificatio
     participation: deps.participation,
   });
   if (evaluation === undefined) return finish(BidReason.RULE_VERSION_UNSUPPORTED);
-  if (!evaluation.determined) return finish(BidReason.UNDERLYING_PARTICIPATION_UNKNOWN);
+  if (!evaluation.determined) {
+    return finish(
+      evaluation.cause === UndeterminedCause.ZERO_EXPOSURE_UNKNOWN
+        ? BidReason.UNDERLYING_ZERO_EXPOSURE_UNKNOWN
+        : BidReason.UNDERLYING_PARTICIPATION_UNKNOWN,
+    );
+  }
   ctx.flags = evaluation.flags;
   return finish(bidAmount <= evaluation.adjustedCapacityKrw ? BidReason.ELIGIBLE : BidReason.BID_EXCEEDS_ADJUSTED_CAPACITY);
 }

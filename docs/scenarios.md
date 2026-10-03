@@ -34,6 +34,7 @@
 - **입력**: `bidAmount = 200억`, 이어서 `240억`.
 - **기대 결과(정책: 거부, 이슈 #10 결정 2026-10-03)**: 어떤 금액이든(200억, 240억, 1) `eligible=false`, `reasonCode=UNDERLYING_PARTICIPATION_UNKNOWN`, `flags=[]`. UNKNOWN 노출은 차감도 면제도 되지 않으며 조정 용량 자체가 산출되지 않는다. 일부만 UNKNOWN이어도 거부. 하위펀드 상태가 기록되면 같은 입찰이 정상 평가된다(`recordStates` 기본값 시 240억 통과). 입찰 펀드 자신이 UNKNOWN인 것은 허용(아직 기록 전).
 - **커버하는 테스트**: `rules.test.ts` "UNKNOWN underlying exposure is NOT exempt and yields no capacity...", "UNKNOWN is neither deducted like PARTICIPATING nor exempt like LOCKED", "a single UNKNOWN among known funds..."; `verify.test.ts` "verifyBid: UNKNOWN underlying participation is rejected" 블록(전부 UNKNOWN, 혼합, 기록 후 정상 평가, 다른 IPO 기록은 무효, 누락 노출이 먼저 보고됨, 영수증에 금액·하위펀드 id 없음, 입찰 펀드 자신의 UNKNOWN 허용); `demo.test.ts` "UNKNOWN underlying funds are rejected, not deducted"; `participation.test.ts` "treats absence as UNKNOWN".
+- **`DEMO_RULE_V2` 변형(노출 0원 UNKNOWN, 설계 S-16a~c)**: 활성 규칙이 `DEMO_RULE_V2`이고 어테스테이션의 `fund_b` 노출이 0원이며 UNKNOWN이면 입찰 금액과 무관하게 `reasonCode=UNDERLYING_ZERO_EXPOSURE_UNKNOWN`(양수 UNKNOWN이 섞여도 이 코드가 우선, S-16b). 마감 전 `fund_b`가 기록되어 UNKNOWN이 아니게 되면 정상 평가(S-16c). 노출 0원이어도 PARTICIPATING/LOCKED는 정상. `DEMO_RULE_V1`은 동결되어 같은 데이터에 `UNDERLYING_PARTICIPATION_UNKNOWN`을 낸다. 커버하는 테스트: `rule-v2.test.ts` 전체.
 - **공백**: 하위펀드 운용사가 기록을 늦추면 상위펀드가 막힌다(가용성/DoS, 이슈 #10에서 계속 검토). UNKNOWN이 나중에 LOCKED로 바뀌면 이미 내려간 판정이 달라지는 문제(검증 시점 스냅샷)는 미모델링.
 
 ## D. 참여/비참여 상태 충돌 및 노출 누락·중복

@@ -5,6 +5,15 @@ import { ParticipationState } from "./participation.js";
 import type { ParticipationLookup } from "./participation.js";
 
 export const DEMO_RULE_V1_ID = "DEMO_RULE_V1";
+export const DEMO_RULE_V2_ID = "DEMO_RULE_V2";
+
+/*
+ * RULE VERSION IMMUTABILITY: the meaning of a rule version id (formula, parameters, UNKNOWN
+ * handling, and the set of reason codes it can produce) must never change once the id has been
+ * used. A behaviour change needs a NEW id; the old id stays frozen and keeps its tests as the pin
+ * (see `rules.test.ts`, "frozen"). Receipts hash `ruleVersion` together with `reasonCode`, so the
+ * same id must always mean the same thing.
+ */
 
 /**
  * ILLUSTRATIVE demo rule only. Not legal or regulatory advice and not a production
@@ -16,6 +25,21 @@ export const DEMO_RULE_V1: RuleVersion = {
     "Illustrative: Adjusted Capacity = Gross Capacity - sum of exposure to underlying funds that are PARTICIPATING. " +
     "NON_PARTICIPATION_LOCKED underlying funds are exempt. UNKNOWN underlying funds are NOT exempt and are NOT " +
     "assumed away either: if any underlying fund is UNKNOWN, adjusted capacity is undetermined and the bid is rejected.",
+  maxAttestationAgeMs: 24 * 60 * 60 * 1000,
+};
+
+/**
+ * ILLUSTRATIVE demo rule only. Same formula and parameters as DEMO_RULE_V1, plus one extra
+ * reason: an UNKNOWN underlying fund whose attested exposure is 0 KRW is treated as a DATA ERROR
+ * (such a combination cannot exist), reported as `ZERO_EXPOSURE_UNKNOWN` and taking precedence
+ * over the generic UNKNOWN rejection. Zero-exposure PARTICIPATING / NON_PARTICIPATION_LOCKED funds are
+ * evaluated normally (deducted 0 / exempt).
+ */
+export const DEMO_RULE_V2: RuleVersion = {
+  id: DEMO_RULE_V2_ID,
+  description:
+    "Illustrative: same formula as DEMO_RULE_V1. If any underlying fund is UNKNOWN the bid is rejected; if an UNKNOWN " +
+    "underlying fund has 0 KRW attested exposure this is a data error with its own reason, which takes precedence.",
   maxAttestationAgeMs: 24 * 60 * 60 * 1000,
 };
 
@@ -75,17 +99,46 @@ export interface RuleDetermined {
 export interface RuleUndetermined {
   readonly determined: false;
   readonly ruleVersion: RuleVersionId;
+  /**
+   * UNKNOWN_PARTICIPATION: at least one underlying fund is UNKNOWN (the only cause DEMO_RULE_V1 can report).
+   * ZERO_EXPOSURE_UNKNOWN: DEMO_RULE_V2 only; an UNKNOWN fund has 0 KRW exposure (data error, takes precedence).
+   */
+  readonly cause: UndeterminedCause;
+  /** Every UNKNOWN underlying fund (including the zero-exposure ones). */
   readonly unknownFundIds: readonly FundId[];
+  /** UNKNOWN underlying funds with 0 KRW exposure; always empty under DEMO_RULE_V1, which does not distinguish them. */
+  readonly zeroExposureUnknownFundIds: readonly FundId[];
   readonly lines: readonly ExposureLine[];
 }
+
+export const UndeterminedCause = {
+  UNKNOWN_PARTICIPATION: "UNKNOWN_PARTICIPATION",
+  ZERO_EXPOSURE_UNKNOWN: "ZERO_EXPOSURE_UNKNOWN",
+} as const;
+export type UndeterminedCause = (typeof UndeterminedCause)[keyof typeof UndeterminedCause];
 
 export type RuleEvaluation = RuleDetermined | RuleUndetermined;
 
 /**
+ * DEMO_RULE_V1 (FROZEN, see the immutability note above).
  * Pure, deterministic. Same input and same participation snapshot => same output.
  * Returns `determined: false` (no number) if any underlying fund is UNKNOWN.
  */
 export function evaluateDemoRuleV1(input: RuleInput): RuleEvaluation {
+  return evaluateDemoRule(input, { id: DEMO_RULE_V1_ID, zeroExposureUnknownIsDataError: false });
+}
+
+/** DEMO_RULE_V2: V1 plus the zero-exposure UNKNOWN data-error rejection. Pure and deterministic. */
+export function evaluateDemoRuleV2(input: RuleInput): RuleEvaluation {
+  return evaluateDemoRule(input, { id: DEMO_RULE_V2_ID, zeroExposureUnknownIsDataError: true });
+}
+
+interface DemoRuleSpec {
+  readonly id: RuleVersionId;
+  readonly zeroExposureUnknownIsDataError: boolean;
+}
+
+function evaluateDemoRule(input: RuleInput, spec: DemoRuleSpec): RuleEvaluation {
   const lines: ExposureLine[] = input.exposures.map((e) => {
     const state = lookupState(input.participation, e.fundId, input.ipoId);
     return { fundId: e.fundId, exposureKrw: e.exposureKrw, state, treatment: treatmentFor(state) };
@@ -93,7 +146,17 @@ export function evaluateDemoRuleV1(input: RuleInput): RuleEvaluation {
 
   const unknownFundIds = lines.filter((l) => l.treatment === Treatment.UNDETERMINED_UNKNOWN).map((l) => l.fundId);
   if (unknownFundIds.length > 0) {
-    return { determined: false, ruleVersion: DEMO_RULE_V1_ID, unknownFundIds, lines };
+    const zeroExposureUnknownFundIds = spec.zeroExposureUnknownIsDataError
+      ? lines.filter((l) => l.treatment === Treatment.UNDETERMINED_UNKNOWN && l.exposureKrw === 0n).map((l) => l.fundId)
+      : [];
+    return {
+      determined: false,
+      ruleVersion: spec.id,
+      cause: zeroExposureUnknownFundIds.length > 0 ? UndeterminedCause.ZERO_EXPOSURE_UNKNOWN : UndeterminedCause.UNKNOWN_PARTICIPATION,
+      unknownFundIds,
+      zeroExposureUnknownFundIds,
+      lines,
+    };
   }
 
   const deducted = sumKrw(lines.filter((l) => l.treatment === Treatment.DEDUCTED).map((l) => l.exposureKrw));
@@ -107,7 +170,7 @@ export function evaluateDemoRuleV1(input: RuleInput): RuleEvaluation {
 
   return {
     determined: true,
-    ruleVersion: DEMO_RULE_V1_ID,
+    ruleVersion: spec.id,
     grossCapacityKrw: input.grossCapacityKrw,
     deductedKrw: deducted,
     adjustedCapacityKrw: adjusted,
@@ -154,7 +217,10 @@ function failClosed(value: never): Treatment {
 }
 
 const RULES: ReadonlyMap<RuleVersionId, { readonly version: RuleVersion; readonly evaluate: (i: RuleInput) => RuleEvaluation }> =
-  new Map([[DEMO_RULE_V1_ID, { version: DEMO_RULE_V1, evaluate: evaluateDemoRuleV1 }]]);
+  new Map([
+    [DEMO_RULE_V1_ID, { version: DEMO_RULE_V1, evaluate: evaluateDemoRuleV1 }],
+    [DEMO_RULE_V2_ID, { version: DEMO_RULE_V2, evaluate: evaluateDemoRuleV2 }],
+  ]);
 
 export function isSupportedRuleVersion(id: RuleVersionId): boolean {
   return RULES.has(id);

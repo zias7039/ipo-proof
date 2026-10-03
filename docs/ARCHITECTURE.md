@@ -22,7 +22,7 @@ AttestationVerifier, Clock ────────┘                          
 | `money.ts` | KRW를 음이 아닌 `bigint`로 표현. number는 거부 |
 | `model.ts` | `Fund`, `IPO`, `CapacityAttestation`, `UnderlyingFundExposure`, `RuleVersion`, 합성 ID 검사 |
 | `participation.ts` | `ParticipationState`, 순수 `transition()`, 인메모리 append-only 원장 |
-| `rules.ts` | `DEMO_RULE_V1`과 규칙 버전 디스패치 |
+| `rules.ts` | `DEMO_RULE_V1`(동결), `DEMO_RULE_V2`와 규칙 버전 디스패치 |
 | `attestation.ts` | `AttestationVerifier` 인터페이스, 허용목록 검증기(서명 검사 없음, deprecated), 인메모리 어테스테이션/폐기/nonce 저장소 |
 | `eip712.ts` | `CapacityAttestation`용 EIP-712 typed data, `Eip712AttestationVerifier`(어테스터 레지스트리 + 서명 검사) |
 | `registry.ts` | Fund·IPO 레지스트리 인터페이스와 인메모리 구현 |
@@ -38,6 +38,9 @@ AttestationVerifier, Clock ────────┘                          
 **UNKNOWN 처리 (거부).**
 - 원장에 기록이 없는 것은 `UNKNOWN`이며, 절대 "비참여"가 아니다.
 - `DEMO_RULE_V1`에서는 해당 IPO에 대해 하위펀드 **중 하나라도** UNKNOWN이면 규칙이 `determined: false`(조정 용량 없음)를 반환하고, `verifyBid`는 `UNDERLYING_PARTICIPATION_UNKNOWN`으로 거부한다. UNKNOWN은 LOCKED처럼 면제되지도, PARTICIPATING으로 가정되지도 않는다. 즉 숫자를 추측하지 않는다. 소유자가 이슈 #10에서 결정했고(2026-10-03) 이전의 "차감+플래그" 동작을 대체했으며, `UNKNOWN_UNDERLYING_DEDUCTED` 플래그는 더 이상 존재하지 않는다. 이 검사는 어테스테이션 무결성 검사와 노출 완전성 검사 뒤, 입찰액을 용량과 비교하기 전에 실행된다.
+- **`DEMO_RULE_V2` (노출 0원 UNKNOWN은 데이터 오류)**: V1과 산식·파라미터가 같고, 어테스테이션에 노출액이 0원인 하위펀드가 UNKNOWN이면 "존재할 수 없는 조합"이므로 데이터 오류로 보고 `UNDERLYING_ZERO_EXPOSURE_UNKNOWN`으로 거부한다(소유자 결정, 이슈 #10 P10-A11, [설계 §4.2 E-05](design/snapshot-and-finalization.md)). 일반 거부 `UNDERLYING_PARTICIPATION_UNKNOWN`보다 **우선**하므로 0원 UNKNOWN과 양수 UNKNOWN이 섞이면 데이터 오류 코드가 나온다. 노출 0원이어도 PARTICIPATING(차감 0원)/LOCKED(면제)이면 정상 평가한다(설계 Q10-N1의 기본안). 검사 위치는 UNKNOWN 거부와 같다(무결성·노출 완전성 검사 뒤, 입찰액 비교 전). 공개 영수증의 `reasonCode`가 이 코드이면 "노출이 0원인 하위펀드가 있다"는 사실이 드러난다(금액은 아님).
+- **규칙 버전 불변 원칙**: 규칙 버전 ID의 의미(산식, 파라미터, UNKNOWN 처리, 낼 수 있는 reason code)는 한 번 쓰인 뒤 바꾸지 않으며, 바뀌면 새 ID를 쓴다. 영수증 해시에 `ruleVersion`과 `reasonCode`가 함께 들어가므로 같은 ID는 같은 의미여야 한다. 그래서 reason code가 하나 늘어나는 이번 변경도 `DEMO_RULE_V1`을 고치지 않고 `DEMO_RULE_V2`로 냈다. `DEMO_RULE_V1`은 현재 `main`의 동작(UNKNOWN 하위펀드는 일반 사유로 거부, 0원 구분 없음)으로 **동결**되었고 `rule-v2.test.ts`의 "frozen" 테스트가 이를 고정한다. 활성 규칙 버전은 배포가 명시적으로 고른다(`VerifyBidDeps.activeRuleVersion`); 어테스테이션의 `ruleVersion`이 활성 버전과 다르면 `RULE_VERSION_MISMATCH`이다.
+- **PR #23의 V1 의미 변경(Codex P1)에 대한 처리**: #23은 `DEMO_RULE_V1`의 UNKNOWN 처리를 "차감+플래그"에서 "거부"로 바꾸면서 ID를 유지했다. 그 시점까지 확정 판정, 영속 저장된 영수증, 배포본이 없었고(인메모리 PoC, 모든 데이터 합성) 따라서 재현해야 할 과거 V1 결과가 존재하지 않았다. 그래서 옛 "차감+플래그" 동작을 별도 규칙으로 되살리지 않고(소유자가 명시적으로 기각한 동작을 선택 가능한 규칙으로 되살리면 오사용 위험이 생긴다), #23 이후 상태를 V1로 동결하는 쪽을 택했다. 옛 동작은 git 이력(#23 이전 커밋)에 남아 있다. 한계: #23 이전 커밋을 배포해 V1 영수증을 만든 곳이 있다면 그 결과와 현재 V1은 구분되지 않는다.
 - 알려진 트레이드오프: 하위펀드의 운용사가 기록을 늦게 하면 상위펀드는 그 기록이 생길 때까지 막히며, 상대방이 기록을 지연시켜 이를 악용할 수 있다(가용성/DoS). 판정 시점 스냅샷과 마감 확정(finalization) 규칙은 아직 정해지지 않았으며 [PR #26 설계안](design/snapshot-and-finalization.md)이 검토 중이다(미병합). 이후의 기록이 앞서 검증된 입찰의 판정을 바꿀 수도 있다.
 - **입찰 펀드 자신의** 상태: LOCKED이면 입찰을 거부하고, UNKNOWN 또는 PARTICIPATING이면 허용한다(아직 기록되지 않은 펀드도 참여 요청 전에 검증받을 수 있다).
 
