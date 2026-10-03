@@ -52,8 +52,9 @@ export interface RuleVersion {
  * The ONLY source of gross payment capacity in the system. It is produced by an attester,
  * never by the asset manager submitting a bid. Times are integer epoch milliseconds.
  *
- * `signature` is an opaque string. Signature verification is NOT IMPLEMENTED in this slice
- * (see AttestationVerifier); revocation is tracked outside the signed object.
+ * `signature` is an opaque string to this model. `Eip712AttestationVerifier` checks it as a
+ * 0x-prefixed 65-byte EIP-712 signature over every other field (see eip712.ts);
+ * `AllowlistAttestationVerifier` ignores it. Revocation is tracked outside the signed object.
  */
 export interface CapacityAttestation {
   readonly attestationId: string;
