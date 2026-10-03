@@ -8,7 +8,7 @@
 | --- | --- | --- | --- | --- | --- |
 | 8 | 시나리오 A~E 문서 + 로드맵 | 문서 | P1 | 구현(문서) | #4, #6 |
 | 9 | 시나리오 A~E 통합 테스트 스위트 | impl | P1 | 구현 | #8, #10 |
-| 10 | UNKNOWN 정책: **거부로 결정됨**(2026-10-03, 진영). 구현 반영됨; 판정 시점 스냅샷·마감 확정 규칙은 [PR #26 설계안](design/snapshot-and-finalization.md)으로 검토 중 | research | P0 | 리서치 | #3 |
+| 10 | UNKNOWN 정책: **거부로 결정됨**(2026-10-03, 진영). 구현 반영됨; 판정 시점 스냅샷·마감 확정 규칙은 [설계 문서](design/snapshot-and-finalization.md)로 병합됨(PR #26; 구현은 아직) | research | P0 | 리서치 | #3 |
 | 11 | EIP-712 서명 스키마 설계 | research | P0 | 리서치 | #4 |
 | 12 | EIP-712 AttestationVerifier 구현 (PR #24로 `main`에 병합됨; 키 교체·거버넌스는 미구현) | impl | P0 | 구현 | #11, #5 |
 | 13 | 어테스터 키 관리·쿼럼 설계 | research | P2 | 리서치 | #11 |
@@ -58,5 +58,7 @@
 
 ## 미결정 사항
 
-- **UNKNOWN 하위펀드: 거부로 결정(#10, 2026-10-03)** — 코드 반영 완료. 남은 것: 판정 시점 스냅샷·마감 확정 규칙(PR #26 설계안, 문서 `docs/design/snapshot-and-finalization.md`가 병합되면 링크로 연결), 늦은 기록으로 인한 가용성 문제(#10에서 계속).
-- `verifyBid` 통과가 참여 기록을 구속하지 않는 점(검증 후 LOCKED 전환 가능)의 처리 — #14에서 다룸. PR #27 설계안은 입찰 접수 시 입찰 펀드의 `PARTICIPATING`을 원자적으로 기록하는 규칙(BIND-1)을 제안한다(미병합, 미구현).
+- **UNKNOWN 하위펀드: 거부로 결정(#10, 2026-10-03)** — 코드 반영 완료. 남은 것: 판정 시점 스냅샷·마감 확정 규칙의 구현(설계: [`docs/design/snapshot-and-finalization.md`](design/snapshot-and-finalization.md), PR #26로 병합됨), 늦은 기록으로 인한 가용성 문제(#10에서 계속).
+- `verifyBid` 통과가 참여 기록을 구속하지 않는 점(검증 후 LOCKED 전환 가능)의 처리 — #14에서 다룸. 설계 문서([`docs/design/participation-ledger-events.md`](design/participation-ledger-events.md), PR #27로 병합됨)는 입찰 접수 시 입찰 펀드의 `PARTICIPATING`을 원자적으로 기록하는 규칙(BIND-1)을 제안한다(설계만 병합, 미구현).
+- **마감 전 참여 정정 허용, 마감 후 변경 불가(진영, 2026-10-03)** — `EVENT_ANNULLED` 정정 이벤트로 append-only 해시 체인을 깨지 않고 정정한다. 설계는 [`docs/design/participation-ledger-events.md`](design/participation-ledger-events.md), 구현은 아직 없다.
+- **서명 스키마 v2·`blindingSalt` 보류, v1 유지(진영, 2026-10-03)** — 설계 [`docs/design/eip712-attestation-schema.md`](design/eip712-attestation-schema.md) §7의 v2 제안은 '보류됨'으로 남기고 구현하지 않는다. 다이제스트 프라이버시 한계는 잔여 위험으로 유지한다.
