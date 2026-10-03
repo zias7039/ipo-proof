@@ -13,6 +13,9 @@
       "default": "./dist/index.js"
     }
   },
+  "engines": {
+    "node": ">=20.19"
+  },
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

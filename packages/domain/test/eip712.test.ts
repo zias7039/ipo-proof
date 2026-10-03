@@ -216,6 +216,38 @@ describe("Eip712AttestationVerifier: malformed and malleable signatures return f
   });
 });
 
+describe("Eip712AttestationVerifier: non-object input and unsupported signature formats", () => {
+  it("returns SIGNATURE_INVALID instead of throwing for null, undefined and primitives", () => {
+    for (const input of [null, undefined, 0, "att_1", true]) {
+      expect(() => verifier.verify(input as unknown as CapacityAttestation)).not.toThrow();
+      expect(verifier.verify(input as unknown as CapacityAttestation)).toEqual(SIG_INVALID);
+    }
+  });
+
+  it("treats an object without a usable attesterId as unauthorized rather than throwing", () => {
+    for (const input of [{}, [], { attesterId: 5 }]) {
+      expect(verifier.verify(input as unknown as CapacityAttestation)).toEqual(UNAUTHORIZED);
+    }
+  });
+
+  it("does not support EIP-2098 compact (64-byte) signatures: they are rejected", async () => {
+    const a = await signedAtt();
+    const r = a.signature.slice(2, 66);
+    const s = BigInt(`0x${a.signature.slice(66, 130)}`);
+    const v = Number.parseInt(a.signature.slice(130), 16);
+    const yParity = BigInt(v - 27);
+    const compact = `0x${r}${((yParity << 255n) | s).toString(16).padStart(64, "0")}`;
+    expect(compact).toHaveLength(2 + 128);
+    expect(verifier.verify({ ...a, signature: compact })).toEqual(SIG_INVALID);
+  });
+
+  it("accepts a string that starts with U+FEFF (a legitimate character, not a BOM to strip)", async () => {
+    const a = await signedAtt({ nonce: "\ufeffabc" });
+    expect(verifier.verify(a)).toEqual({ ok: true });
+    expect(verifier.verify({ ...a, nonce: "abc" })).toEqual(SIG_INVALID);
+  });
+});
+
 describe("Eip712AttestationVerifier: attestations that cannot be encoded are failures, not exceptions", () => {
   const signed = async () => signedAtt();
   const mutate = async (change: Record<string, unknown>) => ({ ...(await signed()), ...change }) as unknown as CapacityAttestation;
@@ -298,6 +330,12 @@ describe("Eip712AttestationVerifier: configuration validation (deploy-time, may 
     const other = syntheticAccount("attester_2").address;
     expect(make([["attester_1", address], ["attester_1", other]])).toThrow(TypeError);
     expect(make([["attester_1", address], ["attester_2", address.toLowerCase()]])).toThrow(TypeError);
+  });
+
+  it("rejects a zero chainId and a zero verifyingContract (weakened domain separation)", () => {
+    expect(make([["attester_1", address]], { ...TEST_DOMAIN, chainId: 0n })).toThrow(TypeError);
+    expect(make([["attester_1", address]], { ...TEST_DOMAIN, verifyingContract: `0x${"0".repeat(40)}` })).toThrow(TypeError);
+    expect(make([["attester_1", address]], { ...TEST_DOMAIN, chainId: 1n })).not.toThrow();
   });
 
   it("rejects an invalid domain", () => {

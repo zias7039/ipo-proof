@@ -17,6 +17,10 @@ import type { AttesterId, CapacityAttestation } from "./model.js";
  * Key rotation, key revocation and attester governance are out of scope. This is a proof of
  * concept, not a security audit.
  *
+ * Not supported (fail closed with SIGNATURE_INVALID): EIP-2098 compact 64-byte signatures, `v` of
+ * 0/1 or EIP-155 style, and EIP-1271 contract-wallet signers (only a plain secp256k1 EOA address
+ * can be registered; a contract address can never match a recovered signer).
+ *
  * Cryptography is delegated to audited libraries (@noble/curves: secp256k1 recovery,
  * @noble/hashes: keccak-256). This file only does EIP-712 byte layout (type strings, 32-byte
  * word packing), which is cross-checked against viem's independent implementation in tests.
@@ -83,7 +87,8 @@ const MAX_UINT256 = (1n << 256n) - 1n;
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const SIGNATURE_RE = /^0x[0-9a-fA-F]{130}$/;
 const utf8 = new TextEncoder();
-const utf8Decoder = new TextDecoder();
+// ignoreBOM: keep a leading U+FEFF in the round-trip so a legitimate string starting with it is not mistaken for malformed.
+const utf8Decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** Thrown only for malformed *inputs to the encoder*; `Eip712AttestationVerifier.verify` converts it into a failure result. */
 export class Eip712EncodingError extends Error {
@@ -311,8 +316,13 @@ export class Eip712AttestationVerifier implements AttestationVerifier {
   private readonly domainSeparator: Uint8Array;
   private readonly signers: ReadonlyMap<AttesterId, string>;
 
-  /** Throws `TypeError` on invalid configuration (bad domain, bad/duplicate address, duplicate attesterId). */
+  /** Throws `TypeError` on invalid configuration (bad or zero domain values, bad/duplicate address, duplicate attesterId). */
   constructor(config: Eip712AttestationVerifierConfig) {
+    // Misconfiguration guard: a zero chainId or zero verifyingContract weakens cross-deployment separation.
+    if (config.domain.chainId === 0n) throw new TypeError("domain.chainId must not be 0");
+    if (typeof config.domain.verifyingContract === "string" && /^0x0{40}$/i.test(config.domain.verifyingContract)) {
+      throw new TypeError("domain.verifyingContract must not be the zero address");
+    }
     this.domainSeparator = hashEip712Domain(config.domain);
     const signers = new Map<AttesterId, string>();
     const addresses = new Set<string>();
@@ -327,11 +337,13 @@ export class Eip712AttestationVerifier implements AttestationVerifier {
   }
 
   verify(attestation: CapacityAttestation): AttesterVerificationResult {
+    const invalid = { ok: false, reasonCode: AttesterVerificationFailure.SIGNATURE_INVALID } as const;
+    // The type says object, but callers may pass anything: fail closed instead of throwing.
+    if (typeof attestation !== "object" || attestation === null) return invalid;
     const expectedSigner = this.signers.get(attestation.attesterId);
     if (expectedSigner === undefined) {
       return { ok: false, reasonCode: AttesterVerificationFailure.ATTESTER_UNAUTHORIZED };
     }
-    const invalid = { ok: false, reasonCode: AttesterVerificationFailure.SIGNATURE_INVALID } as const;
     let digest: Uint8Array;
     try {
       digest = digestWithSeparator(this.domainSeparator, attestation);
