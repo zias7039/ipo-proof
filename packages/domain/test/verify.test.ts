@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalJson } from "../src/hash.js";
+import type { ParticipationLookup } from "../src/participation.js";
 import { DEMO_RULE_V1 } from "../src/rules.js";
 import { PROOF_HASH_KIND, buildReceipt, verifyBid } from "../src/verify.js";
 import { HOUR, NOW, att, makeEnv } from "./fixtures.js";
@@ -244,6 +245,50 @@ describe("verifyBid: UNKNOWN underlying participation is rejected (never exempt,
     const omitted = att({ underlyingExposures: [{ fundId: "fund_c", exposureKrw: 4_000_000_000n }] });
     const { deps } = makeEnv({ attestation: omitted, recordStates: false });
     expect(verifyBid(bid(1n), deps).reasonCode).toBe("UNDERLYING_EXPOSURE_OMITTED");
+  });
+
+  it("rejects when the participation lookup returns unexpected values or throws (fail-closed)", () => {
+    const { deps } = makeEnv();
+    const cases: [string, () => unknown][] = [
+      ["undefined", () => undefined],
+      ["null", () => null],
+      ["empty string", () => ""],
+      ["lowercase unknown", () => "unknown"],
+      ["padded participating", () => "PARTICIPATING "],
+      ["arbitrary string", () => "LOCKED"],
+      ["throws", () => { throw new Error("ledger unavailable"); }],
+    ];
+    for (const [name, f] of cases) {
+      // The bidding fund's own state is read through the same lookup; only the underlying funds matter here.
+      const underlyingOnly: ParticipationLookup = {
+        getState: (fundId, ipoId) => (fundId === "fund_a" ? deps.participation.getState(fundId, ipoId) : (f() as never)),
+      };
+      expect(verifyBid(bid(1n), { ...deps, participation: underlyingOnly }), name).toMatchObject({
+        eligible: false,
+        reasonCode: "UNDERLYING_PARTICIPATION_UNKNOWN",
+      });
+    }
+  });
+
+  it("earlier exposure checks (duplicate, not in registry) are also reported before UNKNOWN participation", () => {
+    const dup = att({
+      underlyingExposures: [
+        { fundId: "fund_b", exposureKrw: 1n },
+        { fundId: "fund_b", exposureKrw: 1n },
+        { fundId: "fund_c", exposureKrw: 1n },
+      ],
+    });
+    expect(verifyBid(bid(1n), makeEnv({ attestation: dup, recordStates: false }).deps).reasonCode).toBe("DUPLICATE_UNDERLYING_EXPOSURE");
+    const extra = att({
+      underlyingExposures: [
+        { fundId: "fund_b", exposureKrw: 1n },
+        { fundId: "fund_c", exposureKrw: 1n },
+        { fundId: "fund_x", exposureKrw: 1n },
+      ],
+    });
+    expect(verifyBid(bid(1n), makeEnv({ attestation: extra, recordStates: false }).deps).reasonCode).toBe(
+      "UNDERLYING_EXPOSURE_NOT_IN_REGISTRY",
+    );
   });
 
   it("the receipt for an UNKNOWN rejection carries no amounts and no underlying fund ids", () => {

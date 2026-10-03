@@ -87,7 +87,7 @@ export type RuleEvaluation = RuleDetermined | RuleUndetermined;
  */
 export function evaluateDemoRuleV1(input: RuleInput): RuleEvaluation {
   const lines: ExposureLine[] = input.exposures.map((e) => {
-    const state = input.participation.getState(e.fundId, input.ipoId);
+    const state = lookupState(input.participation, e.fundId, input.ipoId);
     return { fundId: e.fundId, exposureKrw: e.exposureKrw, state, treatment: treatmentFor(state) };
   });
 
@@ -116,6 +116,24 @@ export function evaluateDemoRuleV1(input: RuleInput): RuleEvaluation {
   };
 }
 
+/**
+ * Fail-closed state lookup. `ParticipationLookup` is a public interface, so its return value is
+ * not trusted at runtime: anything that is not exactly one of the three known states
+ * (undefined, null, "", "unknown", " UNKNOWN", ...) is treated as UNKNOWN, and so is a lookup that
+ * throws. UNKNOWN leads to rejection, so an unexpected value can never turn into an exemption.
+ */
+function lookupState(participation: ParticipationLookup, fundId: FundId, ipoId: IpoId): ParticipationState {
+  let raw: unknown;
+  try {
+    raw = participation.getState(fundId, ipoId);
+  } catch {
+    return ParticipationState.UNKNOWN;
+  }
+  return raw === ParticipationState.PARTICIPATING || raw === ParticipationState.NON_PARTICIPATION_LOCKED
+    ? raw
+    : ParticipationState.UNKNOWN;
+}
+
 function treatmentFor(state: ParticipationState): Treatment {
   switch (state) {
     case ParticipationState.PARTICIPATING:
@@ -124,7 +142,15 @@ function treatmentFor(state: ParticipationState): Treatment {
       return Treatment.EXEMPT_LOCKED;
     case ParticipationState.UNKNOWN:
       return Treatment.UNDETERMINED_UNKNOWN;
+    default:
+      return failClosed(state);
   }
+}
+
+/** Compile-time exhaustiveness check (`value` must be `never`) with a fail-closed runtime fallback. */
+function failClosed(value: never): Treatment {
+  void value;
+  return Treatment.UNDETERMINED_UNKNOWN;
 }
 
 const RULES: ReadonlyMap<RuleVersionId, { readonly version: RuleVersion; readonly evaluate: (i: RuleInput) => RuleEvaluation }> =
