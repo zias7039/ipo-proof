@@ -183,11 +183,17 @@ export function canonicalExposures(
   exposures: CapacityAttestation["underlyingExposures"],
 ): CapacityAttestation["underlyingExposures"] {
   if (!Array.isArray(exposures)) throw new Eip712EncodingError("underlyingExposures: expected an array");
-  if (exposures.some((e) => typeof e !== "object" || e === null)) {
-    throw new Eip712EncodingError("underlyingExposures: expected an array of objects");
-  }
+  // Validate every scalar BEFORE sorting, so the comparator below can never throw a native error.
+  exposures.forEach((e, i) => {
+    if (typeof e !== "object" || e === null) throw new Eip712EncodingError(`underlyingExposures[${i}]: expected an object`);
+    if (typeof e.fundId !== "string") throw new Eip712EncodingError(`underlyingExposures[${i}].fundId: expected a string`);
+    const amount: unknown = e.exposureKrw;
+    if (typeof amount !== "bigint" && !(typeof amount === "number" && Number.isSafeInteger(amount))) {
+      throw new Eip712EncodingError(`underlyingExposures[${i}].exposureKrw: expected a bigint or safe integer`);
+    }
+  });
   return [...exposures].sort((a, b) => {
-    const byFund = compareCodeUnits(String(a.fundId), String(b.fundId));
+    const byFund = compareCodeUnits(a.fundId, b.fundId);
     if (byFund !== 0) return byFund;
     return a.exposureKrw < b.exposureKrw ? -1 : a.exposureKrw > b.exposureKrw ? 1 : 0;
   });
