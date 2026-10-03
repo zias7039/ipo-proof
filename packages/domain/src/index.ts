@@ -7,3 +7,4 @@ export * from "./attestation.js";
 export * from "./registry.js";
 export * from "./verify.js";
 export * from "./eip712.js";
+export * from "./ledger/index.js";

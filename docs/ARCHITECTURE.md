@@ -28,6 +28,9 @@ AttestationVerifier, Clock ────────┘                          
 | `registry.ts` | Fund·IPO 레지스트리 인터페이스와 인메모리 구현 |
 | `hash.ts` | 정규화(canonical) JSON과 SHA-256 |
 | `verify.ts` | `verifyBid`, `BidVerification`, reason code, 영수증 생성 |
+| `ledger/events.ts` | 참여 원장 이벤트 봉투(`LedgerEvent`)와 엄격한 파서. 이벤트에는 금액이 없고 payload는 허용 목록으로 닫혀 있음. 서명은 형식만 검사하며 **검증하지 않음** |
+| `ledger/derive.ts` | 이벤트를 접어(fold) 유효 상태를 도출(`LedgerProjection`, `getStateAt`). 상태 전이는 기존 `transition()`을 재사용하고 `EVENT_ANNULLED`로만 UNKNOWN으로 되돌림 |
+| `ledger/chain.ts` | 해시 체인(`verifyChain`, `HashChainedLedger`). 변조 **탐지**일 뿐 블록체인도 ZK도 아님. 호출자 인증·인가는 아직 없음 |
 
 ## 주요 결정
 
