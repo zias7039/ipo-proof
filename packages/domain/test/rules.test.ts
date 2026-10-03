@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryParticipationLedger } from "../src/participation.js";
 import { DEMO_RULE_V1_ID, RuleFlag, Treatment, evaluateDemoRuleV1, evaluateRule, isSupportedRuleVersion } from "../src/rules.js";
+import type { RuleDetermined, RuleEvaluation } from "../src/rules.js";
 
 function ledger() {
   return new InMemoryParticipationLedger(() => 0);
+}
+
+/** Narrows an evaluation to the determined case, failing the test otherwise. */
+function determined(r: RuleEvaluation): RuleDetermined {
+  if (!r.determined) throw new Error(`expected a determined evaluation, got undetermined for ${r.unknownFundIds.join(",")}`);
+  return r;
 }
 
 describe("DEMO_RULE_V1", () => {
@@ -11,7 +18,7 @@ describe("DEMO_RULE_V1", () => {
     const l = ledger();
     l.requestParticipation("fund_b", "ipo_1");
     l.requestNonParticipationLock("fund_c", "ipo_1");
-    const r = evaluateDemoRuleV1({
+    const r = determined(evaluateDemoRuleV1({
       ipoId: "ipo_1",
       grossCapacityKrw: 30_000_000_000n,
       exposures: [
@@ -19,14 +26,14 @@ describe("DEMO_RULE_V1", () => {
         { fundId: "fund_c", exposureKrw: 4_000_000_000n },
       ],
       participation: l,
-    });
+    }));
     expect(r.adjustedCapacityKrw).toBe(24_000_000_000n);
     expect(r.deductedKrw).toBe(6_000_000_000n);
     expect(r.lines.map((x) => x.treatment)).toEqual([Treatment.DEDUCTED, Treatment.EXEMPT_LOCKED]);
     expect(r.flags).toEqual([]);
   });
 
-  it("UNKNOWN underlying exposure is NOT exempt: it is deducted and flagged", () => {
+  it("UNKNOWN underlying exposure is NOT exempt and yields no capacity: the evaluation is undetermined", () => {
     const l = ledger(); // nothing recorded => UNKNOWN
     const r = evaluateDemoRuleV1({
       ipoId: "ipo_1",
@@ -34,38 +41,61 @@ describe("DEMO_RULE_V1", () => {
       exposures: [{ fundId: "fund_d", exposureKrw: 5_000_000_000n }],
       participation: l,
     });
-    expect(r.adjustedCapacityKrw).toBe(25_000_000_000n);
-    expect(r.lines[0]?.treatment).toBe(Treatment.DEDUCTED_UNKNOWN_CONSERVATIVE);
-    expect(r.flags).toEqual([RuleFlag.UNKNOWN_UNDERLYING_DEDUCTED]);
+    expect(r).toMatchObject({ determined: false, ruleVersion: DEMO_RULE_V1_ID, unknownFundIds: ["fund_d"] });
+    expect(r.lines[0]?.treatment).toBe(Treatment.UNDETERMINED_UNKNOWN);
+    expect("adjustedCapacityKrw" in r).toBe(false);
   });
 
-  it("UNKNOWN is treated exactly like PARTICIPATING for the number, differently from LOCKED", () => {
-    const unknown = ledger();
-    const participating = ledger();
-    participating.requestParticipation("fund_d", "ipo_1");
-    const locked = ledger();
-    locked.requestNonParticipationLock("fund_d", "ipo_1");
+  it("UNKNOWN is neither deducted like PARTICIPATING nor exempt like LOCKED", () => {
     const run = (p: InMemoryParticipationLedger) =>
       evaluateDemoRuleV1({
         ipoId: "ipo_1",
         grossCapacityKrw: 10n,
         exposures: [{ fundId: "fund_d", exposureKrw: 4n }],
         participation: p,
-      }).adjustedCapacityKrw;
-    expect(run(unknown)).toBe(run(participating));
-    expect(run(unknown)).toBe(6n);
-    expect(run(locked)).toBe(10n);
+      });
+    const participating = ledger();
+    participating.requestParticipation("fund_d", "ipo_1");
+    const locked = ledger();
+    locked.requestNonParticipationLock("fund_d", "ipo_1");
+    expect(determined(run(participating)).adjustedCapacityKrw).toBe(6n);
+    expect(determined(run(locked)).adjustedCapacityKrw).toBe(10n);
+    expect(run(ledger()).determined).toBe(false);
+  });
+
+  it("a single UNKNOWN among known funds makes the whole evaluation undetermined and lists only the UNKNOWN ones", () => {
+    const l = ledger();
+    l.requestParticipation("fund_b", "ipo_1");
+    l.requestNonParticipationLock("fund_c", "ipo_1");
+    const r = evaluateDemoRuleV1({
+      ipoId: "ipo_1",
+      grossCapacityKrw: 30n,
+      exposures: [
+        { fundId: "fund_b", exposureKrw: 6n },
+        { fundId: "fund_c", exposureKrw: 4n },
+        { fundId: "fund_d", exposureKrw: 1n },
+        { fundId: "fund_e", exposureKrw: 1n },
+      ],
+      participation: l,
+    });
+    expect(r).toMatchObject({ determined: false, unknownFundIds: ["fund_d", "fund_e"] });
+    expect(r.lines.map((x) => x.treatment)).toEqual([
+      Treatment.DEDUCTED,
+      Treatment.EXEMPT_LOCKED,
+      Treatment.UNDETERMINED_UNKNOWN,
+      Treatment.UNDETERMINED_UNKNOWN,
+    ]);
   });
 
   it("clamps at zero and flags when deductions exceed gross", () => {
     const l = ledger();
     l.requestParticipation("fund_b", "ipo_1");
-    const r = evaluateDemoRuleV1({
+    const r = determined(evaluateDemoRuleV1({
       ipoId: "ipo_1",
       grossCapacityKrw: 5n,
       exposures: [{ fundId: "fund_b", exposureKrw: 9n }],
       participation: l,
-    });
+    }));
     expect(r.adjustedCapacityKrw).toBe(0n);
     expect(r.flags).toContain(RuleFlag.DEDUCTION_EXCEEDS_GROSS_CLAMPED_TO_ZERO);
   });

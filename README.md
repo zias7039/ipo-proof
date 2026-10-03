@@ -44,7 +44,7 @@ This premise comes from the project brief. It has not been checked against actua
 
 ### UNKNOWN is not non-participation
 
-Absence from the ledger is `UNKNOWN`. `UNKNOWN` never receives the exemption. In `DEMO_RULE_V1`, an `UNKNOWN` underlying fund's exposure is **deducted** (conservatively, as if it were PARTICIPATING) and the result carries the flag `UNKNOWN_UNDERLYING_DEDUCTED`. A bid is judged against that conservative figure. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Absence from the ledger is `UNKNOWN`. `UNKNOWN` never receives the exemption. In `DEMO_RULE_V1`, if any underlying fund is `UNKNOWN` the bid is **rejected** with `UNDERLYING_PARTICIPATION_UNKNOWN`: no capacity figure is produced and nothing is assumed about that fund. The bid can be verified again after the fund's state has been recorded. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## What blockchain solves / does NOT solve
 

@@ -14,7 +14,8 @@ export const DEMO_RULE_V1: RuleVersion = {
   id: DEMO_RULE_V1_ID,
   description:
     "Illustrative: Adjusted Capacity = Gross Capacity - sum of exposure to underlying funds that are PARTICIPATING. " +
-    "NON_PARTICIPATION_LOCKED underlying funds are exempt. UNKNOWN underlying funds are NOT exempt (deducted).",
+    "NON_PARTICIPATION_LOCKED underlying funds are exempt. UNKNOWN underlying funds are NOT exempt and are NOT " +
+    "assumed away either: if any underlying fund is UNKNOWN, adjusted capacity is undetermined and the bid is rejected.",
   maxAttestationAgeMs: 24 * 60 * 60 * 1000,
 };
 
@@ -25,15 +26,15 @@ export const Treatment = {
   /** Underlying fund is NON_PARTICIPATION_LOCKED: exempt, not deducted. */
   EXEMPT_LOCKED: "EXEMPT_LOCKED",
   /**
-   * Underlying fund is UNKNOWN: conservative handling, exposure is deducted exactly as if
-   * it were PARTICIPATING. UNKNOWN never receives the exemption.
+   * Underlying fund is UNKNOWN (absent from the ledger, which is not the same as non-participating).
+   * It is never exempt, and no number is produced while any underlying fund is in this state:
+   * the whole evaluation is undetermined (see `RuleUndetermined`).
    */
-  DEDUCTED_UNKNOWN_CONSERVATIVE: "DEDUCTED_UNKNOWN_CONSERVATIVE",
+  UNDETERMINED_UNKNOWN: "UNDETERMINED_UNKNOWN",
 } as const;
 export type Treatment = (typeof Treatment)[keyof typeof Treatment];
 
 export const RuleFlag = {
-  UNKNOWN_UNDERLYING_DEDUCTED: "UNKNOWN_UNDERLYING_DEDUCTED",
   DEDUCTION_EXCEEDS_GROSS_CLAMPED_TO_ZERO: "DEDUCTION_EXCEEDS_GROSS_CLAMPED_TO_ZERO",
 } as const;
 export type RuleFlag = (typeof RuleFlag)[keyof typeof RuleFlag];
@@ -56,7 +57,9 @@ export interface RuleInput {
   readonly participation: ParticipationLookup;
 }
 
-export interface RuleEvaluation {
+/** All underlying participation states were known (PARTICIPATING or LOCKED): a capacity was computed. */
+export interface RuleDetermined {
+  readonly determined: true;
   readonly ruleVersion: RuleVersionId;
   readonly grossCapacityKrw: Krw;
   readonly deductedKrw: Krw;
@@ -65,18 +68,36 @@ export interface RuleEvaluation {
   readonly flags: readonly RuleFlag[];
 }
 
-/** Pure, deterministic. Same input and same participation snapshot => same output. */
+/**
+ * At least one underlying fund is UNKNOWN, so no adjusted capacity is produced (policy decision
+ * of issue #10: reject rather than deduct-and-flag). `lines` shows every exposure's state.
+ */
+export interface RuleUndetermined {
+  readonly determined: false;
+  readonly ruleVersion: RuleVersionId;
+  readonly unknownFundIds: readonly FundId[];
+  readonly lines: readonly ExposureLine[];
+}
+
+export type RuleEvaluation = RuleDetermined | RuleUndetermined;
+
+/**
+ * Pure, deterministic. Same input and same participation snapshot => same output.
+ * Returns `determined: false` (no number) if any underlying fund is UNKNOWN.
+ */
 export function evaluateDemoRuleV1(input: RuleInput): RuleEvaluation {
   const lines: ExposureLine[] = input.exposures.map((e) => {
     const state = input.participation.getState(e.fundId, input.ipoId);
     return { fundId: e.fundId, exposureKrw: e.exposureKrw, state, treatment: treatmentFor(state) };
   });
 
-  const deducted = sumKrw(lines.filter((l) => l.treatment !== Treatment.EXEMPT_LOCKED).map((l) => l.exposureKrw));
-  const flags: RuleFlag[] = [];
-  if (lines.some((l) => l.treatment === Treatment.DEDUCTED_UNKNOWN_CONSERVATIVE)) {
-    flags.push(RuleFlag.UNKNOWN_UNDERLYING_DEDUCTED);
+  const unknownFundIds = lines.filter((l) => l.treatment === Treatment.UNDETERMINED_UNKNOWN).map((l) => l.fundId);
+  if (unknownFundIds.length > 0) {
+    return { determined: false, ruleVersion: DEMO_RULE_V1_ID, unknownFundIds, lines };
   }
+
+  const deducted = sumKrw(lines.filter((l) => l.treatment === Treatment.DEDUCTED).map((l) => l.exposureKrw));
+  const flags: RuleFlag[] = [];
 
   let adjusted = input.grossCapacityKrw - deducted;
   if (adjusted < 0n) {
@@ -85,6 +106,7 @@ export function evaluateDemoRuleV1(input: RuleInput): RuleEvaluation {
   }
 
   return {
+    determined: true,
     ruleVersion: DEMO_RULE_V1_ID,
     grossCapacityKrw: input.grossCapacityKrw,
     deductedKrw: deducted,
@@ -101,7 +123,7 @@ function treatmentFor(state: ParticipationState): Treatment {
     case ParticipationState.NON_PARTICIPATION_LOCKED:
       return Treatment.EXEMPT_LOCKED;
     case ParticipationState.UNKNOWN:
-      return Treatment.DEDUCTED_UNKNOWN_CONSERVATIVE;
+      return Treatment.UNDETERMINED_UNKNOWN;
   }
 }
 

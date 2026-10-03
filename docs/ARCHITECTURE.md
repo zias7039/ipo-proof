@@ -35,9 +35,10 @@ AttestationVerifier, Clock ────────┘                          
 
 **Participation state machine.** Allowed: `UNKNOWN -> PARTICIPATING`, `UNKNOWN -> NON_PARTICIPATION_LOCKED`. Everything else is rejected, including same-state repeats and any move to UNKNOWN. Participation for a locked fund gives `NON_PARTICIPATION_LOCK_ACTIVE`; locking a participating fund gives `PARTICIPATION_ALREADY_RECORDED`.
 
-**UNKNOWN handling (conservative).**
+**UNKNOWN handling (reject).**
 - Absence from the ledger is `UNKNOWN`, never "non-participating".
-- In `DEMO_RULE_V1`, UNKNOWN underlying exposure is **deducted** like PARTICIPATING and flagged `UNKNOWN_UNDERLYING_DEDUCTED`. We chose "deduct and flag" over "reject" so a bid is still evaluated, but only against the conservative number. The alternative (reject with a reason code) is a one-line change in `verifyBid`.
+- In `DEMO_RULE_V1`, if **any** underlying fund is UNKNOWN for the IPO, the rule returns `determined: false` (no adjusted capacity) and `verifyBid` rejects with `UNDERLYING_PARTICIPATION_UNKNOWN`. UNKNOWN is neither exempt like LOCKED nor assumed to be PARTICIPATING: we do not guess a number. Decision recorded by the owner on issue #10 (2026-10-03), replacing the earlier "deduct and flag" behaviour; the `UNKNOWN_UNDERLYING_DEDUCTED` flag no longer exists. The check runs after attestation integrity and exposure-completeness checks and before the bid is compared with capacity.
+- Known trade-off: a fund whose underlying fund's manager records late is blocked until that record exists, which a counterparty could exploit by delaying (availability/DoS). Snapshot-at-decision-time and finalization rules are still open in issue #10; a later record can also change the verdict of a bid that was verified earlier.
 - For the **bidding fund's own** state: LOCKED rejects the bid; UNKNOWN or PARTICIPATING is allowed (a fund that has not yet been recorded can still be verified before it requests participation).
 
 **Deduction can exceed gross.** Adjusted capacity is clamped to 0 and flagged `DEDUCTION_EXCEEDS_GROSS_CLAMPED_TO_ZERO`.

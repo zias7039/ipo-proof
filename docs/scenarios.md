@@ -32,10 +32,9 @@
 
 - **사전조건**: `recordStates: false` — `fund_b`, `fund_c` 모두 원장에 기록 없음(= UNKNOWN). UNKNOWN은 비참여가 아니다.
 - **입력**: `bidAmount = 200억`, 이어서 `240억`.
-- **기대 결과(현행 정책: 차감+플래그)**: UNKNOWN 노출은 PARTICIPATING처럼 차감되어 조정 용량 = 300억 − 60억 − 40억 = **200억**. 200억은 통과하며 `flags=[UNKNOWN_UNDERLYING_DEDUCTED]`, 240억은 `BID_EXCEEDS_ADJUSTED_CAPACITY`. 입찰 펀드 자신이 UNKNOWN인 것은 허용(아직 기록 전).
-- **정책 미결정**: UNKNOWN을 **거부**로 바꾸는 안이 이슈 #10에서 검토 중. 결정되면 이 시나리오의 기대 결과가 바뀐다(`eligible=false`, 새 reasonCode 필요).
-- **커버하는 테스트**: `rules.test.ts` "UNKNOWN underlying exposure is NOT exempt...", "UNKNOWN is treated exactly like PARTICIPATING for the number...", `verify.test.ts` "deducts UNKNOWN underlying exposure (conservative) and flags it", "allows the bidding fund's own state to be UNKNOWN", `participation.test.ts` "treats absence as UNKNOWN".
-- **공백**: 일부만 UNKNOWN인 혼합 케이스의 `verifyBid` 수준 테스트 없음. UNKNOWN이 나중에 LOCKED로 바뀌면 이미 내려간 판정이 달라지는 문제(검증 시점 스냅샷)는 미모델링.
+- **기대 결과(정책: 거부, 이슈 #10 결정 2026-10-03)**: 어떤 금액이든(200억, 240억, 1) `eligible=false`, `reasonCode=UNDERLYING_PARTICIPATION_UNKNOWN`, `flags=[]`. UNKNOWN 노출은 차감도 면제도 되지 않으며 조정 용량 자체가 산출되지 않는다. 일부만 UNKNOWN이어도 거부. 하위펀드 상태가 기록되면 같은 입찰이 정상 평가된다(`recordStates` 기본값 시 240억 통과). 입찰 펀드 자신이 UNKNOWN인 것은 허용(아직 기록 전).
+- **커버하는 테스트**: `rules.test.ts` "UNKNOWN underlying exposure is NOT exempt and yields no capacity...", "UNKNOWN is neither deducted like PARTICIPATING nor exempt like LOCKED", "a single UNKNOWN among known funds..."; `verify.test.ts` "verifyBid: UNKNOWN underlying participation is rejected" 블록(전부 UNKNOWN, 혼합, 기록 후 정상 평가, 다른 IPO 기록은 무효, 누락 노출이 먼저 보고됨, 영수증에 금액·하위펀드 id 없음, 입찰 펀드 자신의 UNKNOWN 허용); `demo.test.ts` "UNKNOWN underlying funds are rejected, not deducted"; `participation.test.ts` "treats absence as UNKNOWN".
+- **공백**: 하위펀드 운용사가 기록을 늦추면 상위펀드가 막힌다(가용성/DoS, 이슈 #10에서 계속 검토). UNKNOWN이 나중에 LOCKED로 바뀌면 이미 내려간 판정이 달라지는 문제(검증 시점 스냅샷)는 미모델링.
 
 ## D. 참여/비참여 상태 충돌 및 노출 누락·중복
 
