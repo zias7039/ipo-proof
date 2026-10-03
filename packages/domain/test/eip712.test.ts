@@ -277,6 +277,24 @@ describe("Eip712AttestationVerifier: attestations that cannot be encoded are fai
     }
   });
 
+  it("does not throw from the exposure sort comparator on malformed scalars (Symbol, object, hostile toString)", async () => {
+    const symbolAmounts = [{ fundId: "fund_b", exposureKrw: Symbol("x") }, { fundId: "fund_b", exposureKrw: 1n }];
+    const hostile = { toString: () => { throw new Error("boom"); } };
+    const changes: Record<string, unknown>[] = [
+      { underlyingExposures: symbolAmounts },
+      { underlyingExposures: [...symbolAmounts].reverse() },
+      { underlyingExposures: [{ fundId: Symbol("f"), exposureKrw: 1n }, { fundId: "fund_b", exposureKrw: 1n }] },
+      { underlyingExposures: [{ fundId: hostile, exposureKrw: 1n }, { fundId: "fund_b", exposureKrw: 1n }] },
+      { underlyingExposures: [{ fundId: "fund_b", exposureKrw: hostile }, { fundId: "fund_b", exposureKrw: 1n }] },
+      { underlyingExposures: [{ fundId: "fund_b", exposureKrw: {} }, { fundId: "fund_b", exposureKrw: 2n }] },
+    ];
+    for (const change of changes) {
+      const a = await mutate(change);
+      expect(() => verifier.verify(a)).not.toThrow();
+      expect(verifier.verify(a)).toEqual(SIG_INVALID);
+    }
+  });
+
   it("distinct strings never collide: lone surrogates are rejected rather than coerced to U+FFFD", async () => {
     const a = await signedAtt({ nonce: "x\ufffdy" });
     expect(verifier.verify(a)).toEqual({ ok: true });
