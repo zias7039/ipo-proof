@@ -1,10 +1,10 @@
 # ipo-proof
 
-> **Disclaimer**
->
-> This project is a technical proof of concept.
->
-> The included eligibility and payment-capacity rules are illustrative implementations and must not be treated as legal or regulatory advice or as a production implementation of Korean securities regulations.
+**Disclaimer**
+
+This project is a technical proof of concept.
+
+The included eligibility and payment-capacity rules are illustrative implementations and must not be treated as legal or regulatory advice or as a production implementation of Korean securities regulations.
 
 `ipo-proof` explores replacing **self-declared institutional IPO payment capacity** (in the context of Korean IPO demand forecasting) with **independently attested source data**, a **deterministic rule engine**, and a **shared participation ledger**.
 
