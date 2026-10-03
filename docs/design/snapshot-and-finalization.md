@@ -103,13 +103,13 @@ M3의 구조 검사 항목(필드 이름은 제안이며 #11 설계 문서의 v2
 | `ruleVersionId`, `ruleSpecDigest` | 규칙 버전 ID와 그 규칙의 명세·파라미터 해시 |
 | `ipoId`, `closeAt`, `participationDate` | IPO와 마감 시각, 참여일 D |
 | `bidId`, `fundId`, `submittedAt`, `intakeSeq` | 입찰 식별, 제출 시각(기록값), 입찰 접수 순번 |
-| `attestationDigest`, `attesterId` | #11 설계의 EIP-712 서명 대상 다이제스트. 입찰이 접수 시점에 이 값을 고정 |
+| `attestationDigest`, `attesterId` | #11 설계(PR #28)의 EIP-712 서명 대상 다이제스트. 입찰이 접수 시점에 이 값을 고정. **이 다이제스트는 금액이 든 구조의 해시이므로 `blindingSalt`(#11 문서 §7.3 제안)가 적용되기 전에는 비공개로 취급**한다 |
 | `registryDigest` | 컷오프 시점의 해당 펀드의 `managerId`와 정렬된 `underlyingFundIds` |
 | `ledgerSeqAtClose`, `ledgerHeadHashAtClose` | 컷오프 순번과 그 시점 원장 해시(#14의 해시 체인) |
 | `underlyingStates` | 하위펀드별 컷오프 시점 상태와 그 상태가 기록된 이벤트 순번 (펀드 ID 정렬) |
 | `revocationSeqAtClose` | 컷오프 시점까지 반영된 폐기 목록 위치 |
 
-산출물: `{eligible, reasonCode, flags}`와 비공개 `adjustedCapacityKrw`. 공개용 확정 영수증은 `finalVerdictDigest = sha256(canonicalJson({inputsDigest, eligible, reasonCode, flags, phase:"FINAL"}))` 형태를 제안한다. 기존 `proofHash`(receipt `version: 1`)와는 별개의 `version: 2` 영수증으로 두고, 기존 필드 의미는 바꾸지 않는다.
+산출물: `{eligible, reasonCode, flags}`와 비공개 `adjustedCapacityKrw`. 공개용 확정 영수증은 `finalVerdictDigest = sha256(canonicalJson({inputsDigest, eligible, reasonCode, flags, phase:"FINAL"}))` 형태를 제안한다. 단 `inputsDigest`가 금액이 든 `attestationDigest`를 포함하므로, 증빙에 난수 `blindingSalt`가 들어가기 전에는 `inputsDigest`/`finalVerdictDigest`도 내부(운영자·감사인) 전용이고, 외부 공개용은 금액·`attestationDigest`를 뺀 별도 해시를 써야 한다(다른 필드가 알려진 경우 금액을 추측해 확인할 수 있기 때문, 영수증 정책과 같은 이유). 기존 `proofHash`(receipt `version: 1`)와는 별개의 `version: 2` 영수증으로 두고, 기존 필드 의미는 바꾸지 않는다.
 
 ---
 
@@ -168,7 +168,7 @@ UNKNOWN을 차감하던 이전 안(`DEMO_RULE_V1` 현행)에서는 "UNKNOWN이�
 
 - **IPO별 규칙 고정**: IPO 레코드에 `ruleVersionId`와 `ruleSpecDigest`를 입찰 창 개시 전에 기록하고, 창 개시 후 변경을 거부한다. 선택 기준일은 증권신고서 최초 제출일(A-001, A-002)이다. 현재 `VerifyBidDeps.activeRuleVersion`은 전역 하나이므로 IPO별 조회로의 확장이 필요하다(구현 몫).
 - **불변 원칙**: 한 번이라도 확정에 쓰인 규칙 버전 ID의 의미(산식, 파라미터, UNKNOWN 처리)는 바꾸지 않는다. 의미가 바뀌면 새 ID를 쓴다. `ruleSpecDigest`는 이 원칙을 기계적으로 확인하는 수단이다(예: `maxAttestationAgeMs` 같은 파라미터가 바뀌면 다이제스트가 바뀐다).
-- **증빙 고정**: 입찰은 접수 시 `attestationDigest`를 고정한다. 확정 시 증빙을 다시 조회하지 않고 고정된 다이제스트에 해당하는 증빙을 사용한다. 증빙이 입찰 후 교체되어도 확정에 영향이 없다.
+- **증빙 고정**: 입찰은 접수 시 `attestationDigest`를 고정한다. 확정 시 증빙을 다시 조회하지 않고 고정된 다이제스트에 해당하는 증빙을 사용한다. 증빙이 입찰 후 교체되어도 확정에 영향이 없다. (PR #24의 저장소는 `(fundId, ipoId)`당 최신 증빙만 서빙하고 교체된 증빙은 내부에 보존만 하므로, 다이제스트/`attestationId`로 조회하는 메서드가 구현 항목으로 필요하다.)
 - **정렬 고정**: 해시에 들어가는 모든 목록(하위펀드, 상태)은 펀드 ID의 코드 단위 순서로 정렬한다. 같은 집합이면 입력 순서와 무관하게 같은 다이제스트가 나와야 한다(S-14).
 
 ### 3.6 재현 절차
@@ -324,7 +324,7 @@ ASSUMPTIONS의 `A-xxx`는 그 문서의 정의를 따르며 이 문서에서 의
 ## 7. 다른 문서·PR과의 관계
 
 - **PR #23(UNKNOWN 거부 구현)**: 이 문서의 전제. 코드·ARCHITECTURE·README·ROADMAP·`scenarios.md` 변경은 그 PR에 있다. 이 문서는 해당 파일을 수정하지 않는다. Codex 리뷰의 규칙 버전 ID 지적은 §1 주와 §3.5에서 다뤘다.
-- **PR #24(EIP-712 검증)**: `attestationDigest`는 거기서 구현된 `attestationDigest()`(EIP-712 서명 대상 다이제스트)를 가리킨다. 기준일 필드 추가는 #11 설계 문서가 v2 제안으로 다룬다.
+- **PR #24(EIP-712 검증)**: `attestationDigest`는 거기서 구현된 `attestationDigest()`(EIP-712 서명 대상 다이제스트)를 가리킨다. 기준일 필드 추가와 `blindingSalt`는 #11 설계 문서(PR #28)가 v2 제안으로 다룬다. PR #24의 저장소는 새 증빙이 `issuedAt` 엄격 증가일 때만 교체를 허용한다(게시 관문).
 - **이슈 #14**: 원장 이벤트 스키마(해시 체인, `IPO_CLOSED` 이벤트, 호출자 인가)와 접수 영수증은 #14 설계 문서가 정한다. 이 문서는 필요한 인터페이스(`ledgerSeqAtClose`, `ledgerHeadHashAtClose`, `IPO_ALREADY_CLOSED`)만 요구한다.
 - **충돌 지점(수정하지 않고 알림)**: `README.md`의 "no regulatory research is included here" 문장, `ARCHITECTURE.md`의 "Not in this slice … regulatory research"와 UNKNOWN 서술, `ROADMAP.md`의 #10 행·미결정 항목, `REGULATORY_ASSUMPTIONS.md`의 `DEMO_RULE_V1` 비교표(UNKNOWN 서술)는 리드 봇이 고치는 대상이다. `ARCHITECTURE.md`가 "판정 시점 스냅샷·마감 확정은 이슈 #10에서 열려 있음"이라고 적은 부분은 이 설계가 채택되면 이 문서 링크로 바꾸는 것이 좋다.
 
