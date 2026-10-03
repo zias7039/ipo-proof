@@ -3,16 +3,16 @@ import type { AttesterId, CapacityAttestation, FundId, IpoId } from "./model.js"
 /* ------------------------------------------------------------------------------------------
  * Attester verification (authorization + signature)
  *
- * SIGNATURE VERIFICATION IS NOT IMPLEMENTED in this slice. `AttestationVerifier` is the seam
- * where EIP-712 (or other) signature checking will plug in later. The only implementation
- * provided, `AllowlistAttestationVerifier`, checks attester AUTHORIZATION (is this attesterId
- * on an allowlist?) and does NOT check `attestation.signature` at all. It must not be used
- * as evidence that an attestation is authentic.
+ * `AttestationVerifier` is the seam where signature checking plugs into `verifyBid`.
+ *  - `Eip712AttestationVerifier` (eip712.ts) checks authorization AND the EIP-712 signature,
+ *    bound to the attester's registered key.
+ *  - `AllowlistAttestationVerifier` (below) checks authorization ONLY and does NOT look at
+ *    `attestation.signature`. It must not be used as evidence that an attestation is authentic.
  * ---------------------------------------------------------------------------------------- */
 
 export const AttesterVerificationFailure = {
   ATTESTER_UNAUTHORIZED: "ATTESTER_UNAUTHORIZED",
-  /** Reserved for a future real signature verifier. Never returned by AllowlistAttestationVerifier. */
+  /** Returned by signature-checking verifiers (Eip712AttestationVerifier). Never returned by AllowlistAttestationVerifier. */
   SIGNATURE_INVALID: "SIGNATURE_INVALID",
 } as const;
 export type AttesterVerificationFailure = (typeof AttesterVerificationFailure)[keyof typeof AttesterVerificationFailure];
@@ -25,7 +25,13 @@ export interface AttestationVerifier {
   verify(attestation: CapacityAttestation): AttesterVerificationResult;
 }
 
-/** Authorization-only verifier. Signature verification: NOT IMPLEMENTED. */
+/**
+ * Authorization-only verifier: signature verification is NOT performed. Kept for tests and
+ * demos of the other `verifyBid` checks.
+ *
+ * @deprecated Not evidence of authenticity; do not use as the basis of any production-like
+ * trust decision. Use `Eip712AttestationVerifier`.
+ */
 export class AllowlistAttestationVerifier implements AttestationVerifier {
   private readonly allowed: ReadonlySet<AttesterId>;
 

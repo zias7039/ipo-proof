@@ -126,7 +126,7 @@ const REQUEST_KEYS = ["bidAmount", "fundId", "ipoId"];
  * Pure verification of a bid against injected state. First failing check wins; order:
  *  request shape -> bid amount -> fund registered -> IPO exists/open -> rule version supported
  *  -> subject's own lock -> attestation present/subject/shape -> rule version match
- *  -> attester authorization (signature: NOT IMPLEMENTED) -> revoked -> validity window
+ *  -> attester authorization + signature (per injected verifier) -> revoked -> validity window
  *  (not-yet-valid / expired / stale) -> nonce replay -> underlying exposure completeness
  *  -> rule evaluation -> bid vs adjusted capacity.
  */
@@ -203,7 +203,8 @@ export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerificatio
   if (!isWellFormed(attestation)) return finish(BidReason.ATTESTATION_MALFORMED);
   if (attestation.ruleVersion !== ruleVersion) return finish(BidReason.RULE_VERSION_MISMATCH);
 
-  // 5. Attester authorization. Signature verification: NOT IMPLEMENTED (interface only).
+  // 5. Attester authorization and signature, as implemented by the injected verifier
+  //    (Eip712AttestationVerifier checks both; AllowlistAttestationVerifier only authorization).
   const attester = deps.attesterVerifier.verify(attestation);
   if (!attester.ok) return finish(attester.reasonCode);
 
