@@ -27,7 +27,8 @@ The included eligibility and payment-capacity rules are illustrative implementat
 | 어테스테이션 **서명 검증** (EIP-712, secp256k1) | **구현됨** (`Eip712AttestationVerifier`): 복구한 서명자가 attesterId에 등록된 주소와 같은지 확인하며, 도메인 분리(name/version/chainId/verifyingContract)를 적용합니다. 위조, 필드 변조, 형식이 잘못되었거나 high-s인 서명, 잘못된 도메인, 미등록 어테스터를 테스트로 다룹니다. 이는 어테스터의 *출처*(누가 서명했는가)를 증명할 뿐 데이터가 *사실*임을 증명하지 않으며, 일반적인 ECDSA 복구이지 영지식 증명이 **아닙니다**. 키 교체/폐기와 어테스터 거버넌스는 **구현되지 않았습니다.** `AllowlistAttestationVerifier`(서명 검사 없음)는 테스트용으로 남아 있으며 deprecated입니다. 보안 감사가 아닙니다. |
 | 영수증 해시 (`proofHash`, 정규화 JSON의 SHA-256) | 구현됨. 영수증 해시일 뿐 **증명이 아님** |
 | **ZK 상태: 미구현** | 어떤 종류의 영지식 증명도 없음 |
-| 블록체인 / 온체인 원장 | **아직 미구현**. '공유 원장'은 인메모리 클래스임 |
+| 참여 원장 이벤트 봉투 + 해시 체인 + 상태 도출 (`packages/domain/src/ledger`, 설계 이슈 #14의 1단계) | 구현됨, 테스트됨. 해시 체인은 변조 **탐지**일 뿐 블록체인도 영지식 증명도 아니며, 체인 끝부분 잘라내기는 외부 체크포인트 없이는 탐지하지 못합니다. **호출자 서명 검증과 인가(R1~R15), 입찰 이벤트, 마감 확정은 구현되지 않았습니다.** 기존 `InMemoryParticipationLedger`는 그대로이며 아직 대체되지 않았습니다 |
+| 블록체인 / 온체인 원장 | **아직 미구현**. '공유 원장'은 인메모리 클래스임 (위 해시 체인도 인메모리) |
 | 영속성 | 미구현 |
 | UI / API 서버 | 미구현 |
 
