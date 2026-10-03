@@ -22,7 +22,7 @@ The included eligibility and payment-capacity rules are illustrative implementat
 | --- | --- |
 | 도메인 모델 (Fund, IPO, CapacityAttestation, UnderlyingFundExposure, ParticipationState, RuleVersion, BidVerification) | 구현됨 (인메모리, bigint KRW) |
 | 참여 상태기계 (UNKNOWN / PARTICIPATING / NON_PARTICIPATION_LOCKED) | 구현됨, 테스트됨 |
-| 규칙 엔진 `DEMO_RULE_V1` | 구현됨, 테스트됨 (예시용 규칙일 뿐) |
+| 규칙 엔진 `DEMO_RULE_V1`(동결)·`DEMO_RULE_V2`(노출 0원 UNKNOWN을 데이터 오류로 거부) | 구현됨, 테스트됨 (예시용 규칙일 뿐) |
 | 만료/stale, 폐기, 규칙 버전, nonce 재생, 어테스터 권한 검사를 포함한 `verifyBid` | 구현됨, 테스트됨 (허용목록 검증기와 EIP-712 검증기 모두로 테스트) |
 | 어테스테이션 **서명 검증** (EIP-712, secp256k1) | **구현됨** (`Eip712AttestationVerifier`): 복구한 서명자가 attesterId에 등록된 주소와 같은지 확인하며, 도메인 분리(name/version/chainId/verifyingContract)를 적용합니다. 위조, 필드 변조, 형식이 잘못되었거나 high-s인 서명, 잘못된 도메인, 미등록 어테스터를 테스트로 다룹니다. 이는 어테스터의 *출처*(누가 서명했는가)를 증명할 뿐 데이터가 *사실*임을 증명하지 않으며, 일반적인 ECDSA 복구이지 영지식 증명이 **아닙니다**. 키 교체/폐기와 어테스터 거버넌스는 **구현되지 않았습니다.** `AllowlistAttestationVerifier`(서명 검사 없음)는 테스트용으로 남아 있으며 deprecated입니다. 보안 감사가 아닙니다. |
 | 영수증 해시 (`proofHash`, 정규화 JSON의 SHA-256) | 구현됨. 영수증 해시일 뿐 **증명이 아님** |
@@ -50,7 +50,7 @@ The included eligibility and payment-capacity rules are illustrative implementat
 
 ### UNKNOWN은 비참여가 아니다
 
-원장에 기록이 없는 것은 `UNKNOWN`입니다. `UNKNOWN`은 면제를 받지 않습니다. `DEMO_RULE_V1`에서는 하위펀드 중 하나라도 `UNKNOWN`이면 입찰을 `UNDERLYING_PARTICIPATION_UNKNOWN`으로 **거부(REJECT)** 합니다. 용량 수치는 산출하지 않으며, 그 펀드에 대해 아무것도 가정하지 않습니다. 해당 펀드의 상태가 기록된 뒤에는 같은 입찰을 다시 검증할 수 있습니다. 소유자가 2026-10-03 이슈 #10에서 결정했고 PR #23으로 병합되었습니다(이전의 '차감+플래그' 동작과 `UNKNOWN_UNDERLYING_DEDUCTED` 플래그는 사라졌습니다).
+원장에 기록이 없는 것은 `UNKNOWN`입니다. `UNKNOWN`은 면제를 받지 않습니다. `DEMO_RULE_V1`에서는 하위펀드 중 하나라도 `UNKNOWN`이면 입찰을 `UNDERLYING_PARTICIPATION_UNKNOWN`으로 **거부(REJECT)** 합니다. 용량 수치는 산출하지 않으며, 그 펀드에 대해 아무것도 가정하지 않습니다. 해당 펀드의 상태가 기록된 뒤에는 같은 입찰을 다시 검증할 수 있습니다. 소유자가 2026-10-03 이슈 #10에서 결정했고 PR #23으로 병합되었습니다(이전의 '차감+플래그' 동작과 `UNKNOWN_UNDERLYING_DEDUCTED` 플래그는 사라졌습니다). `DEMO_RULE_V2`는 여기에 더해, 노출액이 0원인 하위펀드가 `UNKNOWN`이면 데이터 오류로 보고 `UNDERLYING_ZERO_EXPOSURE_UNKNOWN`으로(일반 거부보다 우선) 거부합니다. reason code가 달라지므로 `DEMO_RULE_V1`을 고치지 않고 새 규칙 버전으로 냈습니다(같은 규칙 ID는 같은 의미).
 
 판정 시점 스냅샷과 마감 확정(finalization) 규칙은 #10에서 계속 설계 중이며, [PR #26 설계안](docs/design/snapshot-and-finalization.md)이 검토 중입니다(미병합). 자세한 내용은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)를 참고하세요.
 

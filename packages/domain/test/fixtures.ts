@@ -5,6 +5,7 @@ import { InMemoryParticipationLedger } from "../src/participation.js";
 import { InMemoryFundRegistry, InMemoryIpoRegistry } from "../src/registry.js";
 import { DEMO_RULE_V1 } from "../src/rules.js";
 import type { VerifyBidDeps } from "../src/verify.js";
+import type { RuleVersion } from "../src/model.js";
 import { Eip712AttestationVerifier } from "../src/eip712.js";
 import { TEST_DOMAIN, signAttestation, syntheticAccount } from "./signing.js";
 
@@ -61,7 +62,13 @@ export interface Env {
  *  - one valid attestation for fund_a / ipo_1 is published.
  */
 export function makeEnv(
-  opts: { attestation?: CapacityAttestation | null; recordStates?: boolean; storeVerifier?: AttestationVerifier } = {},
+  opts: {
+    attestation?: CapacityAttestation | null;
+    recordStates?: boolean;
+    storeVerifier?: AttestationVerifier;
+    /** Active rule version. Default DEMO_RULE_V1. The attestation's own `ruleVersion` must match it (use `att({ ruleVersion })`). */
+    rule?: RuleVersion;
+  } = {},
 ): Env {
   const clock = { t: NOW, now: () => clock.t };
   const ledger = new InMemoryParticipationLedger(() => clock.t);
@@ -73,7 +80,7 @@ export function makeEnv(
   if (opts.attestation !== null) mustPublish(store, opts.attestation ?? att());
   const deps: VerifyBidDeps = {
     clock,
-    activeRuleVersion: DEMO_RULE_V1,
+    activeRuleVersion: opts.rule ?? DEMO_RULE_V1,
     funds: new InMemoryFundRegistry([
       { fundId: "fund_a", managerId: "manager_1", underlyingFundIds: ["fund_b", "fund_c"] },
       { fundId: "fund_b", managerId: "manager_2", underlyingFundIds: [] },
@@ -116,12 +123,13 @@ export async function signedAtt(
 
 /** Same demo world as `makeEnv`, but attestations are checked by the EIP-712 verifier. */
 export function makeSignedEnv(
-  opts: { attestation?: CapacityAttestation | null; recordStates?: boolean; strictStore?: boolean } = {},
+  opts: { attestation?: CapacityAttestation | null; recordStates?: boolean; strictStore?: boolean; rule?: RuleVersion } = {},
 ): Env {
   const verifier = makeEip712Verifier();
   const env = makeEnv({
     recordStates: opts.recordStates ?? true,
     attestation: opts.attestation ?? null,
+    ...(opts.rule === undefined ? {} : { rule: opts.rule }),
     storeVerifier: opts.strictStore === true ? verifier : PERMISSIVE_VERIFIER,
   });
   return { ...env, deps: { ...env.deps, attesterVerifier: verifier } };
