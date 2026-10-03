@@ -76,7 +76,7 @@ docs/THREAT_MODEL.md Threat categories and what tests cover so far
 
 ## Development
 
-Requires Node 20 and pnpm 10.
+Requires Node 20.19 or newer (the `@noble/*` dependencies need it) and pnpm 10.
 
 ```sh
 pnpm install
