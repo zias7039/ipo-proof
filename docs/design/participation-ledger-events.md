@@ -6,7 +6,7 @@
 - 작성: 리서치 봇. 이슈: #14 (`Refs #14`). 상태: **설계 제안 (코드 변경 없음)**. 구현은 'IPO Proof 구현' 봇(#15), 권한 모델 리뷰는 보안QA 몫입니다(§10).
 - 선행: 이슈 #10 설계 문서 — PR #26의 `docs/design/snapshot-and-finalization.md`(병합 전이면 PR #26 참조). 이 문서의 `IPO_CLOSED` 컷오프, 접수 영수증, 단조성(해당 문서 §3.4)은 그 문서에 의존합니다. UNKNOWN은 **거부**로 결정되었습니다(이슈 #10 코멘트, 진영, 2026-10-03).
 - 후행: 이슈 #15(영속성), #18(온체인 컨트랙트 설계), #13(어테스터·운용사 키 관리).
-- 코드 기준: `main` 커밋 8e1ab58의 `packages/domain/src/participation.ts`. PR #23(UNKNOWN 거부), PR #24(EIP-712 검증)는 미병합입니다.
+- 코드 기준: `main` 커밋 3fa59ef(2026-10-03 확인)의 `packages/domain/src/participation.ts`. PR #23(UNKNOWN 거부)과 PR #24(EIP-712 검증)는 이미 병합되어 있습니다. 초안은 커밋 8e1ab58 기준이었고, 두 PR은 `participation.ts`를 바꾸지 않았음을 확인했습니다.
 
 ## 0. 요약
 
