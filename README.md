@@ -8,7 +8,7 @@ The included eligibility and payment-capacity rules are illustrative implementat
 
 `ipo-proof` explores replacing **self-declared institutional IPO payment capacity** (in the context of Korean IPO demand forecasting) with **independently attested source data**, a **deterministic rule engine**, and a **shared participation ledger**.
 
-This repository currently contains only the first slice: the pure TypeScript domain logic (Phases 1-2) and repo scaffolding. All identifiers (`fund_a`, `ipo_1`, `attester_1`, ...) and amounts are synthetic. No real fund names, AUM, or personal data belong in this repo.
+This repository currently contains only the first slice: the pure TypeScript domain logic (Phases 1-2), EIP-712 attestation signature verification, and repo scaffolding. All identifiers (`fund_a`, `ipo_1`, `attester_1`, ...) and amounts are synthetic. No real fund names, AUM, or personal data belong in this repo.
 
 ## Status
 
@@ -17,8 +17,8 @@ This repository currently contains only the first slice: the pure TypeScript dom
 | Domain model (Fund, IPO, CapacityAttestation, UnderlyingFundExposure, ParticipationState, RuleVersion, BidVerification) | Implemented (in-memory, bigint KRW) |
 | Participation state machine (UNKNOWN / PARTICIPATING / NON_PARTICIPATION_LOCKED) | Implemented, tested |
 | Rule engine `DEMO_RULE_V1` | Implemented, tested (illustrative rule only) |
-| `verifyBid` with expiry/stale, revocation, rule-version, nonce-replay, attester-authorization checks | Implemented, tested |
-| Attestation **signature verification** (EIP-712 or other) | **NOT IMPLEMENTED** (interface `AttestationVerifier` only; the provided verifier checks an attester allowlist and ignores `signature`) |
+| `verifyBid` with expiry/stale, revocation, rule-version, nonce-replay, attester-authorization checks | Implemented, tested (with both the allowlist verifier and the EIP-712 verifier) |
+| Attestation **signature verification** (EIP-712, secp256k1) | **Implemented** as `Eip712AttestationVerifier`: checks that the recovered signer equals the address registered for the attesterId, with domain separation (name/version/chainId/verifyingContract). Covered by tests for forgery, field tampering, malformed/high-s signatures, wrong domain and unregistered attesters. It authenticates *who signed*, not whether the data is *true*; key rotation/revocation and attester governance are **not** implemented. `AllowlistAttestationVerifier` (no signature check) remains for tests and is deprecated. Not an audit. |
 | Receipt hash (`proofHash`, SHA-256 of canonical JSON) | Implemented. It is a receipt hash, **not** a proof |
 | **ZK STATUS: NOT IMPLEMENTED** | No zero-knowledge proofs of any kind |
 | Blockchain / on-chain ledger | **NOT IMPLEMENTED yet**. The "shared ledger" is an in-memory class |
@@ -36,7 +36,7 @@ This premise comes from the project brief. It has not been checked against actua
 
 ## What does the protocol change
 
-- Gross capacity is **not an input a bidder can provide**. `verifyBid` accepts only `{fundId, ipoId, bidAmount}`; any extra field (such as a self-declared capacity) is rejected. Capacity comes only from a `CapacityAttestation` issued by an attester.
+- Gross capacity is **not an input a bidder can provide**. `verifyBid` accepts only `{fundId, ipoId, bidAmount}`; any extra field (such as a self-declared capacity) is rejected. Capacity comes only from a `CapacityAttestation` issued by an attester. With `Eip712AttestationVerifier` injected, that attestation must also carry a valid EIP-712 signature from the key registered for its attester.
 - The adjustment is computed by a **versioned, deterministic, pure rule** (`DEMO_RULE_V1`): `Adjusted Capacity = Gross Capacity - sum(exposure to underlying funds that are PARTICIPATING)`. Locked funds are exempt.
 - Participation is recorded in a **shared per-Fund+IPO ledger** with a strict state machine, so "participating" and "not participating" cannot be flipped after the fact (`PARTICIPATING <-> NON_PARTICIPATION_LOCKED` is forbidden).
 - Attestations that omit an underlying fund known to the registry are rejected.

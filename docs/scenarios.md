@@ -51,7 +51,7 @@
 - **입력**: 폐기된 `att_1`; 만료 이후 시점; 발급 후 24시간 초과(만료 전); 발급 이전 시점; 같은 어테스터·nonce를 다른 `attestationId`가 재사용; 규칙 버전 불일치; 허용목록에 없는 어테스터; 청약 창 밖 시점.
 - **기대 결과**: 각각 `ATTESTATION_REVOKED`, `ATTESTATION_EXPIRED`(만료 시각 경계 배타적), `ATTESTATION_STALE`, `ATTESTATION_NOT_YET_VALID`, `ATTESTATION_NONCE_REPLAY`, `RULE_VERSION_MISMATCH`, `ATTESTER_UNAUTHORIZED`, `IPO_NOT_OPEN`. 동일 어테스테이션의 재검증은 재생이 아니다.
 - **커버하는 테스트**: `demo.test.ts` (폐기, 만료, 규칙 버전), `verify.test.ts` "attestation integrity checks" 전체(권한, 폐기, 만료 경계, not-yet-valid, stale, nonce 재생, 재검증), "rejects unregistered fund, unknown IPO, IPO outside window", `attestation.test.ts`.
-- **공백**: **서명 위조는 막지 못한다** — 서명 검증 미구현이며 허용목록 검증기는 `signature`를 무시한다(이슈 #11, #12; `SIGNATURE_INVALID`는 reason code만 존재하고 테스트 없음). 폐기 목록의 최신성/가용성, nonce 저장소 영속성(재시작 시 소실) 미검증. 동시에 둘 이상의 사유가 해당될 때의 우선순위는 `verifyBid` 주석의 검사 순서에만 문서화되어 있고 조합 테스트 없음.
+- **공백**: **서명 위조**: `Eip712AttestationVerifier`를 주입하면 등록된 키가 아닌 서명·필드 변조·가변(high-s) 서명·다른 도메인 서명은 `SIGNATURE_INVALID`로 거부된다(`eip712.test.ts`, `eip712-verifybid.test.ts`). 단, 허용목록 검증기(`AllowlistAttestationVerifier`)는 여전히 `signature`를 무시하며, 침해된 허가 어테스터가 서명한 허위 데이터·키 교체/폐기는 막지 못한다. 폐기 목록의 최신성/가용성, nonce 저장소 영속성(재시작 시 소실) 미검증. 동시에 둘 이상의 사유가 해당될 때의 우선순위는 `verifyBid` 주석의 검사 순서에만 문서화되어 있고 조합 테스트 없음.
 
 ---
 
