@@ -6,77 +6,92 @@ This project is a technical proof of concept.
 
 The included eligibility and payment-capacity rules are illustrative implementations and must not be treated as legal or regulatory advice or as a production implementation of Korean securities regulations.
 
-`ipo-proof` explores replacing **self-declared institutional IPO payment capacity** (in the context of Korean IPO demand forecasting) with **independently attested source data**, a **deterministic rule engine**, and a **shared participation ledger**.
+> **면책 조항 (한국어 번역 — 위 영문이 원문입니다)**
+>
+> 이 프로젝트는 기술적 개념 증명(proof of concept)입니다.
+>
+> 포함된 참여 자격 및 주금납입능력 규칙은 예시용 구현이며, 법률·규제 자문이나 한국 증권 규제의 실서비스(프로덕션) 구현으로 취급해서는 안 됩니다.
 
-This repository currently contains only the first slice: the pure TypeScript domain logic (Phases 1-2) and repo scaffolding. All identifiers (`fund_a`, `ipo_1`, `attester_1`, ...) and amounts are synthetic. No real fund names, AUM, or personal data belong in this repo.
+`ipo-proof`는 (한국 IPO 수요예측 맥락에서) **기관이 스스로 신고하는 IPO 주금납입능력**을 **독립적으로 증빙된 원천 데이터(attestation)**, **결정적(deterministic) 규칙 엔진**, **공유 참여 원장**으로 대체하는 방안을 탐구합니다.
 
-## Status
+이 저장소에는 현재 첫 번째 조각만 들어 있습니다. 순수 TypeScript 도메인 로직(Phase 1~2)과 저장소 기본 구성입니다. 모든 식별자(`fund_a`, `ipo_1`, `attester_1` 등)와 금액은 합성(synthetic) 데이터입니다. 실제 펀드명, 운용규모(AUM), 개인정보는 이 저장소에 넣지 않습니다.
 
-| Area | Status |
+## 현황
+
+| 영역 | 상태 |
 | --- | --- |
-| Domain model (Fund, IPO, CapacityAttestation, UnderlyingFundExposure, ParticipationState, RuleVersion, BidVerification) | Implemented (in-memory, bigint KRW) |
-| Participation state machine (UNKNOWN / PARTICIPATING / NON_PARTICIPATION_LOCKED) | Implemented, tested |
-| Rule engine `DEMO_RULE_V1` | Implemented, tested (illustrative rule only) |
-| `verifyBid` with expiry/stale, revocation, rule-version, nonce-replay, attester-authorization checks | Implemented, tested |
-| Attestation **signature verification** (EIP-712 or other) | **NOT IMPLEMENTED** (interface `AttestationVerifier` only; the provided verifier checks an attester allowlist and ignores `signature`) |
-| Receipt hash (`proofHash`, SHA-256 of canonical JSON) | Implemented. It is a receipt hash, **not** a proof |
-| **ZK STATUS: NOT IMPLEMENTED** | No zero-knowledge proofs of any kind |
-| Blockchain / on-chain ledger | **NOT IMPLEMENTED yet**. The "shared ledger" is an in-memory class |
-| Persistence | Not implemented |
-| UI / API server | Not implemented |
+| 도메인 모델 (Fund, IPO, CapacityAttestation, UnderlyingFundExposure, ParticipationState, RuleVersion, BidVerification) | 구현됨 (인메모리, bigint KRW) |
+| 참여 상태기계 (UNKNOWN / PARTICIPATING / NON_PARTICIPATION_LOCKED) | 구현됨, 테스트됨 |
+| 규칙 엔진 `DEMO_RULE_V1` | 구현됨, 테스트됨 (예시용 규칙일 뿐) |
+| 만료/stale, 폐기, 규칙 버전, nonce 재생, 어테스터 권한 검사를 포함한 `verifyBid` | 구현됨, 테스트됨 |
+| 어테스테이션 **서명 검증** (EIP-712 등) | **미구현** (`AttestationVerifier` 인터페이스만 있음. 제공된 검증기는 어테스터 허용목록만 확인하고 `signature`는 무시함) |
+| 영수증 해시 (`proofHash`, 정규화 JSON의 SHA-256) | 구현됨. 영수증 해시일 뿐 **증명이 아님** |
+| **ZK 상태: 미구현** | 어떤 종류의 영지식 증명도 없음 |
+| 블록체인 / 온체인 원장 | **아직 미구현**. '공유 원장'은 인메모리 클래스임 |
+| 영속성 | 미구현 |
+| UI / API 서버 | 미구현 |
 
-## What problem are we solving
+## 어떤 문제를 풀려는가
 
-In the scenario this PoC assumes, an institutional investor's ability to pay for an IPO allocation is declared by the asset manager itself. Two weaknesses follow from that premise:
+이 PoC가 가정하는 시나리오에서 기관투자자의 IPO 배정분 납입 능력은 운용사가 스스로 신고합니다. 이 전제에서 두 가지 약점이 생깁니다.
 
-1. **Self-declared capacity is unverifiable.** The party that benefits from a larger number is the party that reports it.
-2. **Overlapping exposure is easy to miss.** If one fund invests in other funds that may also bid on the same IPO, the same money can appear to back several bids, and nothing forces those deductions to be applied consistently.
+1. **자기 신고 용량은 검증할 수 없습니다.** 숫자가 클수록 이득을 보는 쪽이 그 숫자를 직접 보고합니다.
+2. **중복 노출을 놓치기 쉽습니다.** 한 펀드가 같은 IPO에 입찰할 수 있는 다른 펀드에 투자하면, 같은 돈이 여러 입찰을 뒷받침하는 것처럼 보일 수 있고, 이런 차감을 일관되게 적용하도록 강제하는 장치가 없습니다.
 
-This premise comes from the project brief. It has not been checked against actual rules in this repository, and no regulatory research is included here.
+이 전제는 프로젝트 브리프에서 나왔습니다. 이 저장소에서 실제 규정과 대조해 확인한 것은 아니며, 규정 조사 결과와 PoC 가정은 별도 문서에 정리했습니다. [docs/REGULATORY_RESEARCH.md](docs/REGULATORY_RESEARCH.md)(규정 조사)와 [docs/REGULATORY_ASSUMPTIONS.md](docs/REGULATORY_ASSUMPTIONS.md)(규칙엔진 PoC 가정 목록)를 참고하세요. 두 문서는 리서치 목적이며 법률·규제 자문이 아니고, 현재 `DEMO_RULE_V1`이 그 내용을 구현했다는 뜻도 아닙니다.
 
-## What does the protocol change
+## 이 프로토콜은 무엇을 바꾸는가
 
-- Gross capacity is **not an input a bidder can provide**. `verifyBid` accepts only `{fundId, ipoId, bidAmount}`; any extra field (such as a self-declared capacity) is rejected. Capacity comes only from a `CapacityAttestation` issued by an attester.
-- The adjustment is computed by a **versioned, deterministic, pure rule** (`DEMO_RULE_V1`): `Adjusted Capacity = Gross Capacity - sum(exposure to underlying funds that are PARTICIPATING)`. Locked funds are exempt.
-- Participation is recorded in a **shared per-Fund+IPO ledger** with a strict state machine, so "participating" and "not participating" cannot be flipped after the fact (`PARTICIPATING <-> NON_PARTICIPATION_LOCKED` is forbidden).
-- Attestations that omit an underlying fund known to the registry are rejected.
-- Each verification yields a **receipt hash** over non-sensitive fields so parties can later check they saw the same outcome.
+- 총 용량(gross capacity)은 **입찰자가 제공할 수 있는 입력이 아닙니다.** `verifyBid`는 `{fundId, ipoId, bidAmount}`만 받으며, 그 외 추가 필드(예: 자기 신고 용량)는 거부합니다. 용량은 어테스터가 발급한 `CapacityAttestation`에서만 얻습니다.
+- 조정은 **버전이 있는 결정적 순수 규칙**(`DEMO_RULE_V1`)으로 계산합니다: `조정 용량 = 총 용량 - sum(PARTICIPATING인 하위펀드에 대한 노출)`. 잠금(LOCKED)된 펀드는 면제됩니다.
+- 참여 여부는 엄격한 상태기계를 갖춘 **Fund+IPO 단위 공유 원장**에 기록하므로, '참여'와 '비참여'를 사후에 뒤집을 수 없습니다 (`PARTICIPATING <-> NON_PARTICIPATION_LOCKED`는 금지).
+- 레지스트리에 알려진 하위펀드를 빠뜨린 어테스테이션은 거부합니다.
+- 각 검증은 민감하지 않은 필드에 대한 **영수증 해시**를 만들어, 이후 당사자들이 같은 결과를 보았는지 확인할 수 있게 합니다.
 
-### UNKNOWN is not non-participation
+### UNKNOWN은 비참여가 아니다
 
-Absence from the ledger is `UNKNOWN`. `UNKNOWN` never receives the exemption. In `DEMO_RULE_V1`, an `UNKNOWN` underlying fund's exposure is **deducted** (conservatively, as if it were PARTICIPATING) and the result carries the flag `UNKNOWN_UNDERLYING_DEDUCTED`. A bid is judged against that conservative figure. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+원장에 기록이 없는 것은 `UNKNOWN`입니다. `UNKNOWN`은 면제를 받지 않습니다.
 
-## What blockchain solves / does NOT solve
+- **현행 `main` 코드**: `DEMO_RULE_V1`은 `UNKNOWN` 하위펀드의 노출을 (보수적으로 PARTICIPATING처럼) **차감**하고 결과에 `UNKNOWN_UNDERLYING_DEDUCTED` 플래그를 답니다.
+- **소유자 결정 (2026-10-03, 이슈 #10)**: `UNKNOWN` 하위펀드는 차감+플래그가 아니라 **거부(REJECT)** 로 처리합니다. 이 결정은 열려 있는 PR #23(`fix/reject-unknown-underlying-participation`)에서 구현되었고, **PR #23이 병합되기 전까지는 `main` 코드에 반영되지 않았습니다.** 병합되면 위 '차감+플래그' 동작은 사라집니다.
 
-Blockchain is **not implemented yet**. This section describes what it is expected to help with, and what it will not.
+판정 시점 스냅샷과 마감 확정(finalization) 규칙은 #10에서 계속 설계 중입니다. 자세한 내용은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)를 참고하세요.
 
-**Could help with**
-- A tamper-evident, append-only record of participation transitions that several mutually distrusting parties can read without trusting one operator to keep history honest.
-- Public commitment to rule versions and attester sets, so silent changes are visible.
+## 블록체인이 해결하는 것 / 해결하지 못하는 것
 
-**Does NOT solve**
-- **Garbage in.** A ledger cannot tell whether an attester's data is true. A compromised or lying attester produces a validly formed, false attestation.
-- **Privacy.** Public data is public. Anything put on-chain must be designed not to leak sensitive amounts.
-- **Legal validity or regulatory acceptance** of any rule or record.
-- **Off-chain enforcement.** Nothing on a ledger forces an underwriter to honor a verdict.
-- **Governance.** Who may update rule versions or attester sets is still a human/institutional decision.
+블록체인은 **아직 구현되지 않았습니다.** 이 절은 블록체인이 무엇을 도울 것으로 기대되는지, 그리고 무엇을 해결하지 못하는지를 설명합니다.
 
-## Why not a central database
+**도움이 될 수 있는 것**
+- 서로 신뢰하지 않는 여러 당사자가, 한 운영자가 이력을 정직하게 유지해 주리라 믿지 않고도 읽을 수 있는, 변조 증거가 남는 추가 전용(append-only) 참여 전이 기록.
+- 규칙 버전과 어테스터 집합에 대한 공개 커밋. 몰래 바꾸면 드러납니다.
 
-If every participant trusts one operator (for example a single regulator-run or exchange-run system), **a plain database is likely simpler, cheaper and better**, and this PoC does not argue otherwise. Its premise is only that, where participants do not fully trust a single operator or want independent verifiability of history and rule versions, a shared ledger with independently attested inputs is worth evaluating. The current code does not use any blockchain; the participation ledger is an in-memory class that could equally be backed by a database.
+**해결하지 못하는 것**
+- **쓰레기 입력(Garbage in).** 원장은 어테스터의 데이터가 사실인지 알 수 없습니다. 침해되었거나 거짓말하는 어테스터는 형식상 올바른 허위 어테스테이션을 만들어 냅니다.
+- **프라이버시.** 공개 데이터는 공개입니다. 온체인에 올리는 것은 민감한 금액이 새지 않도록 설계해야 합니다.
+- 어떤 규칙이나 기록의 **법적 유효성 또는 규제 당국의 수용**.
+- **오프체인 집행.** 원장의 어떤 것도 인수회사가 판정을 따르도록 강제하지 못합니다.
+- **거버넌스.** 규칙 버전이나 어테스터 집합을 누가 갱신할 수 있는지는 여전히 사람/기관의 결정입니다.
 
-## Repository layout
+## 왜 중앙 데이터베이스가 아닌가
+
+모든 참여자가 한 운영자(예: 규제기관이나 거래소가 운영하는 단일 시스템)를 신뢰한다면, **일반 데이터베이스가 더 단순하고 저렴하며 나을 가능성이 큽니다.** 이 PoC는 그 반대를 주장하지 않습니다. 이 PoC의 전제는 단지, 참여자들이 단일 운영자를 완전히 신뢰하지 않거나 이력과 규칙 버전의 독립적 검증 가능성을 원하는 경우, 독립적으로 증빙된 입력을 가진 공유 원장이 평가해 볼 만하다는 것입니다. 현재 코드는 블록체인을 전혀 사용하지 않으며, 참여 원장은 데이터베이스로도 똑같이 뒷받침할 수 있는 인메모리 클래스입니다.
+
+## 저장소 구성
 
 ```
-packages/domain      Domain model, state machine, DEMO_RULE_V1, verifyBid (TypeScript, strict)
-docs/ARCHITECTURE.md Short architecture notes and design decisions
-docs/THREAT_MODEL.md Threat categories and what tests cover so far
+packages/domain      도메인 모델, 상태기계, DEMO_RULE_V1, verifyBid (TypeScript, strict)
+docs/ARCHITECTURE.md 짧은 아키텍처 노트와 설계 결정
+docs/THREAT_MODEL.md 위협 범주와 현재까지 테스트가 다루는 범위
+docs/REGULATORY_RESEARCH.md     규정 조사 (리서치 목적, 법률 자문 아님)
+docs/REGULATORY_ASSUMPTIONS.md  규칙엔진 PoC 가정 목록
+docs/scenarios.md    시나리오 A~E
+docs/ROADMAP.md      로드맵과 봇 배정
 .github/workflows    CI (install, lint, typecheck, test, build)
 ```
 
-## Development
+## 개발
 
-Requires Node 20 and pnpm 10.
+Node 20과 pnpm 10이 필요합니다.
 
 ```sh
 pnpm install
@@ -86,6 +101,6 @@ pnpm test
 pnpm build
 ```
 
-## License
+## 라이선스
 
-MIT, see [LICENSE](LICENSE).
+MIT. [LICENSE](LICENSE)를 참고하세요.

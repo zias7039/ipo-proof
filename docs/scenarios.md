@@ -32,8 +32,9 @@
 
 - **사전조건**: `recordStates: false` — `fund_b`, `fund_c` 모두 원장에 기록 없음(= UNKNOWN). UNKNOWN은 비참여가 아니다.
 - **입력**: `bidAmount = 200억`, 이어서 `240억`.
-- **기대 결과(현행 정책: 차감+플래그)**: UNKNOWN 노출은 PARTICIPATING처럼 차감되어 조정 용량 = 300억 − 60억 − 40억 = **200억**. 200억은 통과하며 `flags=[UNKNOWN_UNDERLYING_DEDUCTED]`, 240억은 `BID_EXCEEDS_ADJUSTED_CAPACITY`. 입찰 펀드 자신이 UNKNOWN인 것은 허용(아직 기록 전).
-- **정책 미결정**: UNKNOWN을 **거부**로 바꾸는 안이 이슈 #10에서 검토 중. 결정되면 이 시나리오의 기대 결과가 바뀐다(`eligible=false`, 새 reasonCode 필요).
+- **기대 결과(소유자 결정 #10, 2026-10-03: 거부)**: UNKNOWN 하위펀드가 하나라도 있으면 `eligible=false`이고 조정 용량은 산출하지 않는다(새 reasonCode `UNDERLYING_PARTICIPATION_UNKNOWN`, 입찰 크기와 무관, `flags=[]`). 입찰 펀드 자신이 UNKNOWN인 것은 허용(아직 기록 전). 이 동작은 열린 PR #23에서 구현되었으며 **PR #23 병합 전까지 `main` 코드는 아래 이전 동작을 유지한다.**
+- **병합 전 `main`의 동작(차감+플래그, 대체 예정)**: UNKNOWN 노출은 PARTICIPATING처럼 차감되어 조정 용량 = 300억 − 60억 − 40억 = **200억**. 200억은 통과하며 `flags=[UNKNOWN_UNDERLYING_DEDUCTED]`, 240억은 `BID_EXCEEDS_ADJUSTED_CAPACITY`.
+- **남은 미결정**: 판정 시점 스냅샷과 마감 확정(finalization) 규칙은 이슈 #10에서 계속 설계 중.
 - **커버하는 테스트**: `rules.test.ts` "UNKNOWN underlying exposure is NOT exempt...", "UNKNOWN is treated exactly like PARTICIPATING for the number...", `verify.test.ts` "deducts UNKNOWN underlying exposure (conservative) and flags it", "allows the bidding fund's own state to be UNKNOWN", `participation.test.ts` "treats absence as UNKNOWN".
 - **공백**: 일부만 UNKNOWN인 혼합 케이스의 `verifyBid` 수준 테스트 없음. UNKNOWN이 나중에 LOCKED로 바뀌면 이미 내려간 판정이 달라지는 문제(검증 시점 스냅샷)는 미모델링.
 

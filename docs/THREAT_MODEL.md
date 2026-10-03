@@ -1,18 +1,18 @@
-# Threat model (stub)
+# 위협 모델 (초안)
 
-This is a stub. It lists threat categories and records **only what is covered by automated tests today**. "Not covered" means exactly that: not mitigated and not tested in this slice. Test references are in `packages/domain/test`.
+이 문서는 초안(stub)이다. 위협 범주를 나열하고, **현재 자동화 테스트가 다루는 것만** 기록한다. "아직 다루지 않음"은 문자 그대로 이 조각에서 완화도 테스트도 되지 않았다는 뜻이다. 테스트 참조는 `packages/domain/test`를 기준으로 한다.
 
-| Threat category | Covered so far (by tests) | Not covered yet |
+| 위협 범주 | 현재까지 다루는 것 (테스트 기준) | 아직 다루지 않는 것 |
 | --- | --- | --- |
-| Malicious asset manager | Cannot supply capacity: `verifyBid` rejects requests with extra fields such as a self-declared capacity (`verify.test.ts`). Omitting a participating underlying fund from the attestation is rejected (`verify.test.ts`, `demo.test.ts`). Switching an already-participating fund to LOCKED is rejected (`participation.test.ts`, `demo.test.ts`). | Collusion with an attester. Manipulating or splitting funds to avoid registry linkage. Registry independence is assumed, not enforced. |
-| Malicious / compromised attester | Unauthorized attester id is rejected (`attestation.test.ts`, `verify.test.ts`). | A **compromised authorized** attester can issue false attestations; nothing detects that. Signature verification is NOT IMPLEMENTED (the allowlist verifier ignores signatures). No multi-attester quorum, no attester key rotation. |
-| Malicious underwriter | Nothing. | Ignoring verdicts, selective disclosure, front-running. Receipt hash is not a binding commitment. |
-| Validator collusion | N/A: no blockchain yet. | Everything. |
-| Credential forgery / replay / revocation / stale | Revoked rejected; expired rejected; not-yet-valid rejected; stale (age over rule limit) rejected; nonce reuse on a different attestation rejected; wrong rule version rejected; wrong subject rejected (`verify.test.ts`, `demo.test.ts`). | **Forgery**: no signature verification, so a forged attestation from an allowlisted attester id is accepted. Revocation list freshness/availability. Nonce store durability (in-memory only). |
-| Privacy leakage | Receipt hash contains only an allowlisted set of non-sensitive fields; no amounts (`verify.test.ts`). Bid amounts with the same outcome yield identical hashes. | `BidVerification` still reveals eligibility and reason code, which leaks information at the boundary (e.g. repeated probing of bid sizes). Attestation contents are plain objects. No access control, no ZK. |
-| Unauthorized state transition | Only `UNKNOWN -> PARTICIPATING` and `UNKNOWN -> NON_PARTICIPATION_LOCKED` are accepted; exhaustively tested; rejected requests leave the ledger unchanged (`participation.test.ts`). | **Who** may request a transition is not modeled: there is no caller authentication or authorization on the ledger. |
-| Rule version manipulation | Attestation with a rule version different from the active one is rejected; unsupported active rule version is rejected (`verify.test.ts`). | Governance of who sets the active rule version. Versions are not committed anywhere tamper-evident. `DEMO_RULE_V1` parameters live in code. |
+| 악의적 운용사 | 용량을 제공할 수 없다: `verifyBid`는 자기 신고 용량 같은 추가 필드가 있는 요청을 거부한다 (`verify.test.ts`). 어테스테이션에서 참여 중인 하위펀드를 빠뜨리면 거부된다 (`verify.test.ts`, `demo.test.ts`). 이미 참여 중인 펀드를 LOCKED로 바꾸는 것은 거부된다 (`participation.test.ts`, `demo.test.ts`). | 어테스터와의 공모. 레지스트리 연결을 피하기 위한 펀드 조작·분할. 레지스트리의 독립성은 가정일 뿐 강제되지 않는다. |
+| 악의적/침해된 어테스터 | 허가되지 않은 어테스터 ID는 거부된다 (`attestation.test.ts`, `verify.test.ts`). | **침해된 허가 어테스터**는 허위 어테스테이션을 발급할 수 있고, 이를 탐지하는 장치가 없다. 서명 검증은 미구현이다 (허용목록 검증기는 서명을 무시한다). 다중 어테스터 쿼럼과 어테스터 키 교체도 없다. |
+| 악의적 인수회사 | 없음. | 판정 무시, 선별적 공개, 프런트러닝. 영수증 해시는 구속력 있는 커밋먼트가 아니다. |
+| 검증자 공모 | 해당 없음: 아직 블록체인이 없다. | 전부. |
+| 자격증명 위조 / 재생 / 폐기 / stale | 폐기된 것 거부, 만료된 것 거부, 아직 유효하지 않은 것 거부, stale(규칙 한도 초과 경과)한 것 거부, 다른 어테스테이션에서의 nonce 재사용 거부, 잘못된 규칙 버전 거부, 잘못된 대상 거부 (`verify.test.ts`, `demo.test.ts`). | **위조**: 서명 검증이 없으므로 허용목록에 있는 어테스터 ID로 위조한 어테스테이션이 받아들여진다. 폐기 목록의 최신성/가용성. nonce 저장소의 내구성(인메모리뿐). |
+| 프라이버시 유출 | 영수증 해시에는 허용목록에 있는 민감하지 않은 필드만 들어가며 금액은 없다 (`verify.test.ts`). 결과가 같은 입찰 금액은 동일한 해시를 낸다. | `BidVerification`은 여전히 적격 여부와 reason code를 드러내며, 이는 경계에서 정보를 흘린다 (예: 입찰 크기의 반복 탐색). 어테스테이션 내용은 평문 객체다. 접근 제어와 ZK는 없다. |
+| 무단 상태 전이 | `UNKNOWN -> PARTICIPATING`과 `UNKNOWN -> NON_PARTICIPATION_LOCKED`만 받아들여지며, 전수 테스트되었고, 거부된 요청은 원장을 바꾸지 않는다 (`participation.test.ts`). | 전이를 **누가** 요청할 수 있는지는 모델링되어 있지 않다. 원장에 호출자 인증·인가가 없다. |
+| 규칙 버전 조작 | 활성 규칙과 다른 규칙 버전의 어테스테이션은 거부되고, 지원되지 않는 활성 규칙 버전도 거부된다 (`verify.test.ts`). | 활성 규칙 버전을 누가 정하는지에 대한 거버넌스. 버전은 변조 증거가 남는 어디에도 커밋되지 않는다. `DEMO_RULE_V1`의 파라미터는 코드에 있다. |
 
-Also covered: UNKNOWN underlying participation is never exempt (deducted and flagged) (`rules.test.ts`, `verify.test.ts`), and money is bigint-only (`money.test.ts`).
+그 밖에 다루는 것: UNKNOWN 하위펀드 참여는 결코 면제되지 않는다(`rules.test.ts`, `verify.test.ts`). 현행 `main`에서는 차감되고 플래그가 붙는다. 소유자 결정(2026-10-03, 이슈 #10)에 따라 이를 거부(REJECT)로 바꾸는 변경이 열린 PR #23에 있으며, 병합 전까지는 `main`에 반영되지 않았다. 또한 금액은 bigint만 허용한다(`money.test.ts`).
 
-None of this is a security audit. The system is a proof of concept.
+이 중 어느 것도 보안 감사가 아니다. 이 시스템은 개념 증명이다.
