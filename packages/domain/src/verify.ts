@@ -42,6 +42,8 @@ export const BidReason = {
   ATTESTATION_NONCE_REPLAY: "ATTESTATION_NONCE_REPLAY",
   UNDERLYING_EXPOSURE_OMITTED: "UNDERLYING_EXPOSURE_OMITTED",
   UNDERLYING_EXPOSURE_NOT_IN_REGISTRY: "UNDERLYING_EXPOSURE_NOT_IN_REGISTRY",
+  /** An underlying fund has no recorded participation (UNKNOWN). Not exempt, not assumed: rejected. */
+  UNDERLYING_PARTICIPATION_UNKNOWN: "UNDERLYING_PARTICIPATION_UNKNOWN",
   DUPLICATE_UNDERLYING_EXPOSURE: "DUPLICATE_UNDERLYING_EXPOSURE",
   BID_EXCEEDS_ADJUSTED_CAPACITY: "BID_EXCEEDS_ADJUSTED_CAPACITY",
 } as const;
@@ -62,7 +64,7 @@ export interface BidVerification {
   readonly proofHashKind: typeof PROOF_HASH_KIND;
   /** Integer epoch milliseconds from the injected clock. */
   readonly verifiedAt: number;
-  /** Non-fatal conservative-handling notes, e.g. UNKNOWN_UNDERLYING_DEDUCTED. */
+  /** Non-fatal notes from the rule, e.g. DEDUCTION_EXCEEDS_GROSS_CLAMPED_TO_ZERO. */
   readonly flags: readonly RuleFlag[];
 }
 
@@ -128,7 +130,7 @@ const REQUEST_KEYS = ["bidAmount", "fundId", "ipoId"];
  *  -> subject's own lock -> attestation present/subject/shape -> rule version match
  *  -> attester authorization (signature: NOT IMPLEMENTED) -> revoked -> validity window
  *  (not-yet-valid / expired / stale) -> nonce replay -> underlying exposure completeness
- *  -> rule evaluation -> bid vs adjusted capacity.
+ *  -> rule evaluation (rejects if any underlying participation is UNKNOWN) -> bid vs adjusted capacity.
  */
 export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerification {
   const verifiedAt = deps.clock.now();
@@ -240,6 +242,7 @@ export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerificatio
     participation: deps.participation,
   });
   if (evaluation === undefined) return finish(BidReason.RULE_VERSION_UNSUPPORTED);
+  if (!evaluation.determined) return finish(BidReason.UNDERLYING_PARTICIPATION_UNKNOWN);
   ctx.flags = evaluation.flags;
   return finish(bidAmount <= evaluation.adjustedCapacityKrw ? BidReason.ELIGIBLE : BidReason.BID_EXCEEDS_ADJUSTED_CAPACITY);
 }
