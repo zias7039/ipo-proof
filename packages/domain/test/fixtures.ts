@@ -4,6 +4,8 @@ import { InMemoryParticipationLedger } from "../src/participation.js";
 import { InMemoryFundRegistry, InMemoryIpoRegistry } from "../src/registry.js";
 import { DEMO_RULE_V1 } from "../src/rules.js";
 import type { VerifyBidDeps } from "../src/verify.js";
+import { Eip712AttestationVerifier } from "../src/eip712.js";
+import { TEST_DOMAIN, signAttestation, syntheticAccount } from "./signing.js";
 
 export const NOW = 1_800_000_000_000;
 export const HOUR = 60 * 60 * 1000;
@@ -70,4 +72,33 @@ export function makeEnv(opts: { attestation?: CapacityAttestation | null; record
     attesterVerifier: new AllowlistAttestationVerifier(["attester_1"]),
   };
   return { deps, ledger, store, clock };
+}
+
+/* ------------------------------------------------------------------------------------------
+ * Signed-attestation fixtures (EIP-712). The allowlist-based `makeEnv` above is unchanged.
+ * Registry: attester_1 and attester_2 each bound to their own synthetic test key.
+ * ---------------------------------------------------------------------------------------- */
+
+export const SIGNER_LABELS = { attester_1: "attester_1", attester_2: "attester_2" } as const;
+
+export function attesterRegistry(): [string, string][] {
+  return Object.entries(SIGNER_LABELS).map(([id, label]) => [id, syntheticAccount(label).address]);
+}
+
+export function makeEip712Verifier(): Eip712AttestationVerifier {
+  return new Eip712AttestationVerifier({ domain: TEST_DOMAIN, attesters: attesterRegistry() });
+}
+
+/** Like `att()`, but signed by `signerLabel` (default: attester_1's synthetic key). */
+export async function signedAtt(
+  overrides: Partial<CapacityAttestation> = {},
+  signerLabel: string = SIGNER_LABELS.attester_1,
+): Promise<CapacityAttestation> {
+  return signAttestation(att(overrides), signerLabel);
+}
+
+/** Same demo world as `makeEnv`, but attestations are checked by the EIP-712 verifier. */
+export function makeSignedEnv(opts: { attestation?: CapacityAttestation | null; recordStates?: boolean } = {}): Env {
+  const env = makeEnv({ ...opts, attestation: opts.attestation ?? null });
+  return { ...env, deps: { ...env.deps, attesterVerifier: makeEip712Verifier() } };
 }
