@@ -23,6 +23,7 @@ describe("DEMO_RULE_V1 demo scenario", () => {
       participation: ledger,
     });
     expect(attestation.grossCapacityKrw).toBe(30_000_000_000n);
+    if (!r.determined) throw new Error("expected a determined evaluation");
     expect(r.adjustedCapacityKrw).toBe(24_000_000_000n);
   });
 
@@ -76,5 +77,15 @@ describe("DEMO_RULE_V1 demo scenario", () => {
       eligible: false,
       reasonCode: "UNDERLYING_EXPOSURE_OMITTED",
     });
+  });
+
+  it("UNKNOWN underlying funds are rejected, not deducted (policy of issue #10)", () => {
+    const { deps } = makeEnv({ recordStates: false });
+    for (const amount of [1n, 20_000_000_000n, 24_000_000_000n]) {
+      expect(verifyBid(bid(amount), deps)).toMatchObject({
+        eligible: false,
+        reasonCode: "UNDERLYING_PARTICIPATION_UNKNOWN",
+      });
+    }
   });
 });
