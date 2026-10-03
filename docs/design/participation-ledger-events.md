@@ -6,7 +6,7 @@
 - 작성: 리서치 봇. 이슈: #14 (`Refs #14`). 상태: **설계 제안 (코드 변경 없음)**. 구현은 'IPO Proof 구현' 봇(#15), 권한 모델 리뷰는 보안QA 몫입니다(§10).
 - 선행: 이슈 #10 설계 문서 — PR #26의 `docs/design/snapshot-and-finalization.md`(병합 전이면 PR #26 참조). 이 문서의 `IPO_CLOSED` 컷오프, 접수 영수증, 단조성(해당 문서 §3.4)은 그 문서에 의존합니다. UNKNOWN은 **거부**로 결정되었습니다(이슈 #10 코멘트, 진영, 2026-10-03).
 - 후행: 이슈 #15(영속성), #18(온체인 컨트랙트 설계), #13(어테스터·운용사 키 관리).
-- **결정 반영(2026-10-03, 리드 봇을 통해 전달된 진영 님 결정)**: ① D14-Q1: **마감 전 정정 허용, 마감 후 변경 불가.** `EVENT_ANNULLED` 이벤트로 append-only 해시 체인을 깨지 않고 정정한다(§2.3, §4.2 R10~R13, §5.1). ② D14-Q2: 독립 `requestParticipation` **유지**(§7). ③ D14-Q3/Q4: 진영 님이 임의 판단을 위임하여 **단일 원장 운영자가 순번과 시간 기준을 정하는 것**으로 확정(§6.4에 한계 명시). 규정이 요구하는 것이 아니라 PoC 단순화 선택입니다. ④ #11의 v2(`blindingSalt` 등)는 **보류**: 이 문서의 서명 규약은 v1과 같은 라이브러리·규칙을 쓰며 v2 필드에 의존하지 않습니다.
+- **결정 반영(2026-10-03, 리드 봇을 통해 전달된 진영 님 결정)**: ① D14-Q1: **마감 전 정정 허용, 마감 후 변경 불가.** `EVENT_ANNULLED` 이벤트로 append-only 해시 체인을 깨지 않고 정정한다(§2.3, §4.2 R10~R13, §5.1). ② D14-Q2: 독립 `requestParticipation` **유지**(§7). ③ D14-Q3/Q4: 진영 님이 임의 판단을 위임하여 **단일 원장 운영자가 순번과 시간 기준을 정하는 것**으로 확정(§6.4에 한계 명시). 규정이 요구하는 것이 아니라 PoC 단순화 선택입니다. ④ #11의 v2(`blindingSalt` 등)는 **보류**: 이 문서의 서명 규약은 v1과 같은 라이브러리·규칙을 쓰며 v2 필드에 의존하지 않습니다. ⑤ **마감 전 입찰 취소 가능, 마감 후 불가**(Q14-N4 해소): 취소는 입찰이 만든 BIND-1 기록만 되돌리며 운용사 단독 서명으로 처리한다(R15, §7). ⑥ **정정 승인자는 운용사 서명자와 독립된 주체여야 한다**(Q14-N1 해소): 동일 주체 서명은 거부하고, 레지스트리 관리자와 원장 운영자가 같은 주체이면 독립 승인으로 인정하지 않는다(R14, §4.5). 단일 운영자 선택(D14-Q3)과의 공존·한계는 §6.4.1에 있다.
 - 코드 기준: `main` 커밋 3fa59ef(2026-10-03 확인)의 `packages/domain/src/participation.ts`. PR #23(UNKNOWN 거부)과 PR #24(EIP-712 검증)는 이미 병합되어 있습니다. 초안은 커밋 8e1ab58 기준이었고, 두 PR은 `participation.ts`를 바꾸지 않았음을 확인했습니다.
 
 ## 0. 요약
@@ -15,8 +15,11 @@
 2. 제안: 원장을 **해시 체인으로 연결된 append-only 이벤트 로그**로 정의하고(§2), 상태 전이 요청에 **서명된 요청(EIP-712 `LedgerAction`)** 을 요구하며, 서명자를 **독립 레지스트리의 `Fund.managerId`** 와 대조한다(§3, §4). 운용사는 자기 펀드의 상태만 기록할 수 있다(타 펀드 대리 기록 금지).
 3. 마감 확정(#10)은 원장에 `IPO_CLOSED` 이벤트로 들어간다. 이후 해당 IPO의 상태 이벤트와 **정정 이벤트**는 거부되고, 컷오프 이전 순번만 확정 판정에 반영된다(§5).
 4. `verifyBid` 통과가 참여 기록을 구속하지 않는 문제(ROADMAP 미결정 항목)는 **"접수된 입찰이 입찰 펀드의 PARTICIPATING을 원자적으로 기록"** 하는 규칙(BIND-1)으로 닫는 것을 제안한다(§7).
-5. 이 설계로 막히지 않는 것은 §6.2에 따로 적었다: 운용사 키 탈취, 레지스트리 장악, 시퀀서의 순서 조작, 같은 운용사 내부 조작, 정정 공동 서명자의 공모. 단일 운영자 선택의 한계는 §6.4에 모았다.
-6. 소유자 결정 4개(D14-Q1~Q4)는 반영되었다(§9.3). 반영 중 생긴 새 열린 질문은 Q14-N1~N4다.
+5. 이 설계로 막히지 않는 것은 §6.2에 따로 적었다: 운용사 키 탈취, 레지스트리 장악, 시퀀서의 순서 조작, 같은 운용사 내부 조작, 정정 공동 서명자(운용사–승인자)의 공모와 독립성 검사의 우회. 단일 운영자 선택의 한계는 §6.4에 모았다.
+6. 소유자 결정 4개(D14-Q1~Q4)는 반영되었다(§9.3).
+7. **정정 승인자는 독립 주체여야 한다**(R14). 시스템이 확인할 수 있는 것은 식별자·서명 키·신고된 `controllerId`의 상이함이고, 레지스트리 관리자와 원장 운영자가 같은 주체이면 정정 기능 자체를 끈다(fail closed). 실제 사람·조직의 독립성은 증명하지 못한다(§4.5, §6.4.1).
+8. **마감 전 입찰 취소**(R15)는 입찰이 만든 `PARTICIPATING`만 되돌리고, 독립 승인 없이 운용사 서명만으로 처리한다. 대신 승인자의 속도 제한이 없다(T-17).
+9. 남은 열린 질문은 Q14-N2, N3, N5, N6이다(§9.3).
 
 ---
 
@@ -59,7 +62,7 @@
 | `subjectFundId` | 문자열 \| null | 상태가 바뀌는 펀드. IPO 단위 이벤트는 `null` |
 | `actorId` | 문자열 | 요청자(운용사 `managerId` 또는 운영자 역할 ID) |
 | `authorization` | 객체 | `{scheme, requestNonce, expiresAt, signature}` (§3.2). 운용사 요청은 `scheme = EIP712_LEDGER_ACTION_V1`. 운영자 이벤트는 같은 규약의 별도 타입(`OperatorAction{action, ipoId, requestNonce, expiresAt}`)을 쓴다. 정정 이벤트는 `scheme = EIP712_LEDGER_ANNULMENT_V1` |
-| `coAuthorizations` | 객체 배열 | 공동 서명. 정정 이벤트에서만 비어 있지 않다: 레지스트리 관리자의 `AnnulmentApproval` 서명 1건(§3.2, R10). 다른 이벤트에서는 빈 배열 |
+| `coAuthorizations` | 객체 배열 | 공동 서명. 정정 이벤트에서만 비어 있지 않다: 독립된 승인자의 `AnnulmentApproval` 서명 1건(§3.2, R10, R14). 다른 이벤트에서는 빈 배열 |
 | `payload` | 객체 | 이벤트 유형별(§2.3) |
 | `registrySeq` | 정수 | 인가 판단에 사용한 레지스트리 버전(§4.3) |
 | `requestedAt` | 정수(ms) | **요청자 주장 시각**. 신뢰하지 않음 |
@@ -72,13 +75,13 @@
 
 | `eventType` | 누가 | `payload` | 효과 |
 | --- | --- | --- | --- |
-| `PARTICIPATION_RECORDED` | 해당 펀드의 운용사 | `{from, to: "PARTICIPATING"}` | 상태 `UNKNOWN → PARTICIPATING` |
-| `NON_PARTICIPATION_LOCKED_RECORDED` | 해당 펀드의 운용사 | `{from, to: "NON_PARTICIPATION_LOCKED"}` | 상태 `UNKNOWN → NON_PARTICIPATION_LOCKED` |
+| `PARTICIPATION_RECORDED` | 해당 펀드의 운용사 | `{from, to: "PARTICIPATING", origin, bidId?}` — `origin`은 `INDEPENDENT`(독립 `requestParticipation`) 또는 `BIND_1`(입찰 접수로 기록, `bidId` 필수) | 상태 `UNKNOWN → PARTICIPATING` |
+| `NON_PARTICIPATION_LOCKED_RECORDED` | 해당 펀드의 운용사 | `{from, to: "NON_PARTICIPATION_LOCKED", origin}` | 상태 `UNKNOWN → NON_PARTICIPATION_LOCKED` |
 | `IPO_CLOSED` | 원장 운영자 | `{closesAt, ledgerSeqAtClose}` | 컷오프 확정. 이후 해당 IPO 상태 이벤트 거부(§5). `ledgerSeqAtClose`는 이 이벤트의 `seq - 1` |
 | `IPO_FINALIZED` | 원장 운영자 | `{finalizationDigest}` | #10의 확정 레코드 다이제스트를 원장에 못박음 |
 | `FINDING_ANNOTATED` | 운영자 또는 감사 역할 | `{targetSeq, kind, note}` | 사후 발견(폐기, 이의)을 **주석**으로만 기록. 상태에 영향 없음 |
 | `MANAGER_KEY_REVOKED` | 키 관리 역할(#13) | `{managerId, revokedKeyId}` | 이 순번부터 해당 키로 서명된 새 요청 거부(§4.4) |
-| `EVENT_ANNULLED` | 해당 펀드의 운용사 + 레지스트리 관리자 공동 서명(R10) | `{targetSeq, targetEventHash, reason, replacement}` — `reason`은 `MISTAKEN_ENTRY` 또는 `KEY_COMPROMISE`, `replacement`는 `null` 또는 `"PARTICIPATING"`/`"NON_PARTICIPATION_LOCKED"` | **마감 전에 한해** 대상 상태 이벤트를 무효로 표시하고 그 펀드의 **유효 상태**를 `UNKNOWN`으로 되돌린다. 대상 이벤트와 체인은 지워지지 않는다. `replacement`가 있으면 같은 요청이 바로 다음 순번에 해당 상태 이벤트를 **원자적으로** 추가한다(사이에 다른 이벤트 없음) |
+| `EVENT_ANNULLED` | `reason`이 `MISTAKEN_ENTRY`/`KEY_COMPROMISE`이면 해당 펀드의 운용사 + **독립된** 승인자(R10, R14). `reason = BID_WITHDRAWN`이면 운용사 단독(R15) | `{targetSeq, targetEventHash, reason, replacement, bidId?}` — `reason`은 `MISTAKEN_ENTRY` / `KEY_COMPROMISE` / `BID_WITHDRAWN`, `replacement`는 `null` 또는 `"PARTICIPATING"`/`"NON_PARTICIPATION_LOCKED"`, `bidId`는 `BID_WITHDRAWN`일 때만 | **마감 전에 한해** 대상 상태 이벤트를 무효로 표시하고 그 펀드의 **유효 상태**를 `UNKNOWN`으로 되돌린다. 대상 이벤트와 체인은 지워지지 않는다. `replacement`가 있으면 같은 요청이 바로 다음 순번에 해당 상태 이벤트(`origin = INDEPENDENT`)를 **원자적으로** 추가한다(사이에 다른 이벤트 없음) |
 
 - **정정(annul)의 의미**: 정정은 과거 이벤트를 고치거나 지우지 않는다. 새 `EVENT_ANNULLED` 이벤트를 **뒤에 덧붙여** "순번 `targetSeq`의 이벤트는 더 이상 유효 상태를 만들지 않는다"고 선언한다. 해시 체인(§2.1)은 그대로 유지되고 `targetSeq`의 원래 이벤트도 감사용으로 남는다. 정정 이벤트를 다시 정정하는 이벤트는 없다. 되돌린 뒤 같은 상태나 다른 상태를 다시 기록하려면 새 `PARTICIPATION_RECORDED`/`NON_PARTICIPATION_LOCKED_RECORDED`를 추가한다.
 - 거부된 요청은 **체인에 넣지 않는다**. 거부 요청은 별도의 `RejectionAuditLog`(비권위, 용량 제한 가능)에 요청 해시, 사유 코드, 시각만 남긴다. 체인에 넣으면 스팸으로 체인이 부풀고, 감사 목적은 별도 로그로 충족된다.
@@ -135,9 +138,18 @@ LedgerAnnulment {          // 운용사가 서명
   string  requestNonce;
   uint256 expiresAt;
 }
-AnnulmentApproval {        // 레지스트리 관리자가 서명 (R10)
-  string  approverId;
+AnnulmentApproval {        // 독립된 승인자가 서명 (R10, R14)
+  string  approverId;      // actorId와 달라야 하고 운영자와도 달라야 한다 (R14)
   bytes32 annulmentDigest; // 위 LedgerAnnulment의 EIP-712 digest
+  string  requestNonce;
+  uint256 expiresAt;
+}
+BidWithdrawal {            // 입찰 취소: 입찰 펀드의 운용사가 서명 (R15, #10 §3.7)
+  string  actorId;
+  string  fundId;
+  string  ipoId;
+  string  bidId;
+  string  afterState;      // "" (기본: 입찰 이전 상태 UNKNOWN) | "PARTICIPATING" | "NON_PARTICIPATION_LOCKED"
   string  requestNonce;
   uint256 expiresAt;
 }
@@ -162,8 +174,8 @@ AnnulmentApproval {        // 레지스트리 관리자가 서명 (R10)
 | --- | --- | --- |
 | `FUND_MANAGER` (운용사) | **자기 `managerId`가 레지스트리상 운용사인 펀드**의 `PARTICIPATION_RECORDED`/`NON_PARTICIPATION_LOCKED_RECORDED` 요청, 자기 펀드 이벤트의 **정정 요청**(관리자 공동 서명 필요), 자기 펀드의 하위펀드 중 UNKNOWN 목록 조회 | 타 운용사 펀드 기록·정정, 단독 정정, 마감 처리, 레지스트리 수정 |
 | `ATTESTER` | 증빙 발급(#11) | 원장 쓰기 |
-| `LEDGER_OPERATOR` (시퀀서) | 순번 부여, `IPO_CLOSED`, `IPO_FINALIZED`, 체크포인트 서명 | 운용사 대신 상태 이벤트를 만드는 것(운용사 서명 없이는 거부) |
-| `REGISTRY_ADMIN` | 펀드 레지스트리 변경 (§4.3), 정정 요청에 대한 **공동 서명(승인)** (R10) | 원장 상태 이벤트 생성, 단독 정정 |
+| `LEDGER_OPERATOR` (시퀀서) | 순번 부여, `IPO_CLOSED`, `IPO_FINALIZED`, 체크포인트 서명 | 운용사 대신 상태 이벤트를 만드는 것(운용사 서명 없이는 거부), 정정 승인 서명(R14: 승인자와 같은 주체이면 안 됨) |
+| `REGISTRY_ADMIN` | 펀드 레지스트리 변경 (§4.3), 정정 요청에 대한 **승인 서명** — 단, 운용사 서명자 및 원장 운영자와 독립된 주체일 때만 유효(R14) | 원장 상태 이벤트 생성, 단독 정정, 운영자 겸직 상태에서의 승인 |
 | `AUDITOR` | 읽기 전용 | 쓰기 |
 
 ### 4.2 인가 규칙
@@ -179,12 +191,14 @@ AnnulmentApproval {        // 레지스트리 관리자가 서명 (R10)
 | R7 | `transition()`이 허용한다 | 기존 `TransitionRejection` 그대로 |
 | R8 | `IPO_CLOSED`/`IPO_FINALIZED`는 `LEDGER_OPERATOR` 서명이어야 하고, `IPO_CLOSED`는 시퀀서 시계가 `closesAt` 이상일 때만, IPO당 한 번만 | `LEDGER_OPERATOR_REQUIRED`, `IPO_NOT_YET_CLOSABLE`, `IPO_ALREADY_CLOSED` |
 | R9 | 키 폐기 이벤트 순번 이후에는 그 키로 서명된 새 요청 거부 | `LEDGER_SIGNATURE_INVALID` (또는 전용 코드) |
-| R10 | 정정 인증·인가: `LedgerAnnulment`는 대상 펀드의 현재 운용사 키로 서명(R1~R4 동일 적용), **그리고** `AnnulmentApproval`이 레지스트리 관리자 키로 같은 `annulmentDigest`에 대해 서명되어 있어야 한다. 한쪽만으로는 정정 불가. PoC의 레지스트리 관리자는 단일 주체이며(쿼럼은 #13), 이 주체가 원장 운영자와 같으면 독립 승인이 아니다(§6.4) | `LEDGER_ANNUL_COSIGN_REQUIRED`, `LEDGER_ACTOR_NOT_FUND_MANAGER`, `LEDGER_SIGNATURE_INVALID` |
+| R10 | 정정 인증·인가: `LedgerAnnulment`는 대상 펀드의 현재 운용사 키로 서명(R1~R4 동일 적용), **그리고** `AnnulmentApproval`이 **독립된 승인자**(R14)의 키로 같은 `annulmentDigest`에 대해 서명되어 있어야 한다. 한쪽만으로는 정정 불가. (`reason = BID_WITHDRAWN`은 R15의 별도 경로) | `LEDGER_ANNUL_COSIGN_REQUIRED`, `LEDGER_ACTOR_NOT_FUND_MANAGER`, `LEDGER_SIGNATURE_INVALID` |
 | R11 | 정정 대상 유효성: `targetSeq`의 이벤트가 **같은 IPO·같은 펀드**의 상태 이벤트(`PARTICIPATION_RECORDED`/`NON_PARTICIPATION_LOCKED_RECORDED`)이고 `targetEventHash`가 일치하며 아직 정정되지 않았다(현재 유효 상태를 만든 이벤트). 정정 이벤트 자체는 정정할 수 없다. `replacementState`가 있으면 정정 직후 상태(`UNKNOWN`)에서 `transition()`이 허용해야 하고, 하나라도 실패하면 요청 전체를 거부한다(원자성) | `LEDGER_ANNUL_TARGET_INVALID`, 기존 `TransitionRejection` |
-| R12 | BIND-1(§7)이 입찰 접수로 기록한 `PARTICIPATING`은 그 입찰이 활성인 동안 정정할 수 없다. 정정으로 BIND-1을 우회해 입찰한 펀드를 잠그는 것(#10 E-09)을 막기 위함이다. 입찰 취소가 정의되어 있지 않으므로(#10 P10-A10) 현재 이 기록은 정정 경로가 없다(Q14-N4) | `LEDGER_ANNUL_BOUND_TO_BID` |
+| R12 | BIND-1(§7)이 입찰 접수로 기록한 `PARTICIPATING`(`origin = BIND_1`)은 R10 정정(운용사 + 승인자)의 대상이 될 수 없다. 해소하는 정식 경로는 **입찰 취소(R15)** 하나뿐이다. 정정 경로로 BIND-1을 우회해 입찰한 펀드를 잠그는 것(#10 E-09)을 막기 위함이다 | `LEDGER_ANNUL_BOUND_TO_BID` |
 | R13 | 정정은 `IPO_CLOSED`보다 앞선 순번일 때만 효력이 있다. 같은 규칙의 반대면: 컷오프 이전에 정정된 상태는 확정 판정에 그대로 반영되고, 컷오프 이후의 정정 요청은 R6으로 거부된다 | `IPO_ALREADY_CLOSED` |
+| R14 | **정정 승인자의 독립성**: 승인자는 운용사 서명자와 독립된 주체여야 하고, 레지스트리 관리자와 원장 운영자가 같은 주체이면 그 승인은 독립 승인으로 인정하지 않는다. 구체 검사(I1~I4, §4.5): ① `approverId ≠ actorId` ② 두 서명에서 복구한 주소가 서로 다르고 승인자 주소는 운용사·운영자 주소와도 다르다 ③ 신고된 `controllerId`가 운용사와 다르다 ④ 승인자 주체가 원장 운영자 주체와 같지 않다. **동일 주체 서명은 거부**한다. 설정이 ④를 만족하지 못하면(겸직) 정정 기능은 비활성(fail closed) | `LEDGER_ANNUL_APPROVER_NOT_INDEPENDENT`, `LEDGER_ANNUL_DISABLED` |
+| R15 | **입찰 취소 경로**(#10 §3.7): `BidWithdrawal`은 입찰 펀드의 현재 운용사 키로 서명(R1~R4 동일 적용)하고, `bidId`는 그 펀드·IPO의 **활성** 입찰이어야 하며(`BID_NOT_FOUND`, `BID_ALREADY_WITHDRAWN`), 마감 전이어야 한다(R6). 입찰이 BIND-1로 만든 `PARTICIPATING`(`origin = BIND_1`, 같은 `bidId`)이 유효 상태이면 `EVENT_ANNULLED(reason = BID_WITHDRAWN, bidId)`를 **운용사 서명만으로, 승인자 없이** 원자적으로 추가한다(입찰 이전 상태로 되돌릴 뿐 새 권한이 아니므로 R10·R14의 대상이 아님). `afterState`가 있으면 이어서 재기록한다. 유효 상태가 `origin = INDEPENDENT`이거나 바인딩이 없으면 원장 이벤트는 없다(입찰 저장소만 변경). 재제출로 대체된 입찰은 바인딩을 유지하고, 마지막 활성 입찰이 취소될 때에만 해소한다 | `LEDGER_ACTOR_NOT_FUND_MANAGER`, `IPO_ALREADY_CLOSED`, `BID_NOT_FOUND`, `BID_ALREADY_WITHDRAWN` |
 
-판정 순서는 거부 사유가 정보 노출이 되지 않도록 인증(R2, R3, R4, R10의 서명 검증) → 인가(R1, R10의 승인자 권한) → 도메인(R5~R7, R11~R13) 순을 제안한다. 서명이 유효하지 않은 호출자에게 펀드 등록 여부를 알려주지 않기 위해서다.
+판정 순서는 거부 사유가 정보 노출이 되지 않도록 인증(R2, R3, R4, R10의 서명 검증) → 인가(R1, R10의 승인자 권한, R14 독립성) → 도메인(R5~R7, R11~R13, R15)순을 제안한다. 서명이 유효하지 않은 호출자에게 펀드 등록 여부를 알려주지 않기 위해서다.
 
 ### 4.3 레지스트리 신뢰와 고정
 
@@ -201,6 +215,22 @@ R1은 레지스트리가 운용사–펀드 관계의 진실이라는 가정에 
 - 침해 시점과 폐기 시점 사이의 잘못된 기록은 **마감 전이면** `EVENT_ANNULLED`(reason = `KEY_COMPROMISE`)로 정정할 수 있다(D14-Q1 결정). 순서는 ① 키 폐기(`MANAGER_KEY_REVOKED`), ② 새 키 등록(#13), ③ 새 키로 `LedgerAnnulment` 서명 + 레지스트리 관리자 승인, ④ 필요하면 `replacement`로 올바른 상태 재기록. 폐기 전에 침해 키로 정정 요청이 올 수 있으나 관리자 승인이 없으면 거부된다(R10).
 - **마감 후**의 잘못된 기록은 정정할 수 없다. 사후 발견은 `FINDING_ANNOTATED` 주석으로만 남는다(§5).
 
+### 4.5 정정 승인자의 독립성 (R14)
+
+결정(2026-10-03, 진영 님): 정정 승인자가 운용사 서명자와 같은 사람·주체이면 안 된다. 레지스트리 관리자와 원장 운영자가 같은 주체인 경우에도 독립 승인으로 인정하지 않는다. 동일 주체 서명은 거부한다.
+
+**등록 정보.** 서명 주체(principal)마다 `principalId`, 서명 주소, 신고된 `controllerId`(그 키를 실제로 통제하는 주체의 라벨)를 레지스트리에 둔다. `controllerId`는 **자기 신고 값**이며 시스템이 진위를 검증하지 못한다(P14-A06, Q14-N6).
+
+| 검사 | 내용 | 막는 것 | 못 막는 것 |
+| --- | --- | --- | --- |
+| I1 식별자 | `approverId ≠ actorId` | 같은 ID로 두 서명 | 다른 ID를 같은 사람이 보유 |
+| I2 서명 키 | 두 서명에서 복구한 주소가 다르고, 한 주소를 둘 이상의 principal에 등록하는 것을 거부(`PRINCIPAL_KEY_REUSE`). 승인자 주소는 운용사·운영자 주소와도 달라야 함 | 같은 키로 두 번 서명, 키 재사용 | 한 사람이 서로 다른 키를 여러 개 보유 |
+| I3 통제 주체 | 승인자 `controllerId` ≠ 운용사 `controllerId` | 신고가 같은 경우 | 허위 신고 |
+| I4 운영자 분리 | 승인자 principal ≠ 원장 운영자 principal (주소와 `controllerId` 모두). 레지스트리 관리자와 운영자가 같은 주체이면 승인을 인정하지 않음 | 운영자가 승인자를 겸직 | 운영자 측의 우회 설정(설정 신뢰) |
+| I5 설정 시점 | 설정이 I2~I4를 만족하지 못하면 정정 기능을 끈다(`LEDGER_ANNUL_DISABLED`). 다른 기능(기록·마감·입찰 취소)은 정상 | 독립 승인자 없이 정정이 켜지는 것 | – |
+
+**동일 주체 서명 거부의 의미**: I1~I4 중 하나라도 위반하면 그 정정 요청은 `LEDGER_ANNUL_APPROVER_NOT_INDEPENDENT`로 거부되고 원장은 변하지 않는다. 시스템이 보증하는 것은 **등록된 식별자·키·신고 라벨의 상이함**까지이다.
+
 ---
 
 ## 5. 마감 확정과의 연결
@@ -216,8 +246,10 @@ R1은 레지스트리가 운용사–펀드 관계의 진실이라는 가정에 
 | --- | --- | --- |
 | UNKNOWN 거부(#10) | 정정으로 하위펀드가 `UNKNOWN`으로 돌아가면 그 하위펀드를 보유한 상위펀드의 잠정 판정은 거부로 바뀐다. 마감까지 재기록이 없으면 확정도 거부(UNKNOWN-FINAL). 정정+재기록 원자 처리(R11)로 중간 `UNKNOWN` 구간을 없앨 수 있다 | #10 E-16, E-18, S-22, S-24 |
 | `LOCKED` 면제 | 허위 `LOCKED`를 마감 전에 정정하면 상위펀드의 면제가 사라져 용량이 줄어든다(원래 값으로 복귀). 마감 후에는 정정할 수 없다 | §6.1, #10 E-08 |
-| BIND-1 | R12: 입찰 접수로 기록된 `PARTICIPATING`은 활성 입찰 중 정정 불가 | #10 E-19, S-25 |
+| BIND-1 | R12: 입찰 접수로 기록된 `PARTICIPATING`은 R10 정정(운용사 + 승인자)으로 되돌릴 수 없다. **입찰 취소(R15)** 만이 그 기록을 해소하며, 해소 후 상태는 입찰 이전인 `UNKNOWN`(또는 `afterState`) | #10 E-19, E-21, S-25, S-28 |
 | 확정 규칙(#10) | 확정 판정은 컷오프까지의 유효 상태의 함수이다. 정정이 있어도 같은 컷오프면 같은 결과(결정성). 마감 전에는 `결정된 판정 → 다른 결정된 판정`이 가능해졌고(단조성 약화), 마감 후에는 불변 | #10 §3.4, S-23, S-27 |
+| 입찰 취소(R15) | 입찰 펀드의 `PARTICIPATING`(`origin = BIND_1`)이 `UNKNOWN`으로 돌아가므로 그 펀드를 보유한 상위펀드의 잠정 판정이 UNKNOWN 거부로 바뀔 수 있다(승인자의 속도 제한 없음, T-17). `afterState`로 원자 재기록하면 중간 UNKNOWN이 없다. `origin = INDEPENDENT`인 상태는 취소가 건드리지 않는다. 마감 후 취소는 `IPO_ALREADY_CLOSED` | #10 E-25, S-32 |
+| 정정 승인자 독립성(R14) | 정정은 독립 승인자가 있어야만 가능하므로 승인자 구성이 불가능한 배치에서는 마감 전 오기록도 정정할 수 없다(fail closed, §6.4.1) | §4.5 |
 | 독립 `requestParticipation`(D14-Q2) | 유지. 자기 펀드의 `PARTICIPATING` 선점(T-11)은 여전히 정당한 권한이고, 마감 전에는 운용사가 관리자 승인을 받아 정정할 수 있다 | §7 |
 | 입찰 접수 순서 | 정정 요청도 `IPO_CLOSED`와의 순번 경합 대상이다(T-13). 접수 영수증(§2.5)이 정정 요청에도 발급된다 | §6.2 |
 
@@ -251,16 +283,18 @@ R1은 레지스트리가 운용사–펀드 관계의 진실이라는 가정에 
 | T-09 | 거부 요청 대량 전송(스팸) | – | 거부는 체인에 안 들어감. 속도 제한은 구현 몫 | 가용성은 서비스 계층 이슈 |
 | T-10 | 서명 요청을 가로채 먼저 제출(프런트러닝) | – | 같은 서명은 같은 효과(R4 멱등), 서명자 아닌 자가 내용을 바꿀 수 없음. EIP-712가 권장하는 "먼저 제출되어도 의도한 효과가 같음" 성질 (EIP-712 Frontrunning attacks 절) | – |
 | T-11 | 사전 선점: IPO 등록 직후 자기 모든 펀드를 `PARTICIPATING`으로 일괄 기록해 경쟁사 상위펀드의 용량 축소 | – | R1은 막지 못함(자기 펀드 기록은 정당). D14-Q2 결정으로 독립 참여 선언을 **유지**하므로 이 경로는 열려 있다 | **잔여 위험(수용)**. 마감 전에는 같은 운용사가 관리자 승인으로 정정할 수 있으나 경쟁사에게 보장되는 것은 아님 |
-| T-12 | 정정 공동 서명자(운용사 + 레지스트리 관리자)의 공모, 또는 PoC에서 두 주체가 같은 경우 정정을 임의로 사용해 상태를 바꿈 | – | 정정은 체인에 남고(감사), 마감 후 불가(R6), 승인자 서명이 별도 필요(R10) | **공모하면 막지 못함.** PoC에서 레지스트리 관리자와 운영자가 같은 주체이면 독립 승인이 아니다(§6.4) |
+| T-12 | 정정 승인자가 운용사와 같은 주체·같은 키이거나, 승인자가 운영자를 겸하는 상태에서 정정을 사용 | – | R14: 식별자·키·`controllerId`·운영자 분리 검사로 **거부**(I1~I4), 겸직이면 정정 기능 비활성(I5). 정정은 체인에 남고 마감 후 불가(R6) | **서로 다른 키·허위 `controllerId`로 같은 사람이 두 역할을 하는 경우(T-16)와 운용사–승인자의 실제 공모는 막지 못함** |
 | T-13 | 정정과 `IPO_CLOSED`의 경합: 정정만 하고 재기록 전에 마감되거나, 시퀀서가 정정/재기록 순번을 `IPO_CLOSED` 뒤로 밀어 영구 UNKNOWN을 만듦 | – | 정정+재기록 원자 처리(R11), 접수 영수증, 체크포인트 | 시퀀서의 순서 조작은 막지 못함(TA-1, §6.4) |
-| T-14 | 정정으로 BIND-1을 우회해 입찰 후 자기 펀드를 잠금(#10 E-09) | – | R12: 입찰 접수로 기록된 `PARTICIPATING`은 활성 입찰 중 정정 불가 | 입찰 취소가 도입되면 재검토(Q14-N4) |
-| T-15 | 마감 직전 반복 정정으로 상위펀드의 판정을 흔듦(예측 불가, 가용성) | – | 각 정정에 관리자 승인이 필요하므로 속도 제한 역할. 모든 정정이 체인과 UNKNOWN 가시성 조회에 남음 | 승인자가 공모하거나 승인 비용이 낮으면 제한이 없음. 횟수·시간 상한은 두지 않음(Q14-N2) |
+| T-14 | 정정으로 BIND-1을 우회해 입찰 후 자기 펀드를 잠금(#10 E-09) | – | R12: 입찰 접수로 기록된 `PARTICIPATING`은 R10 정정 대상이 아님. 해소는 입찰 취소(R15)뿐이고 취소 후 잠금은 UNKNOWN → LOCKED 일반 전이 | 취소 후 잠금은 정당한 경로(우회가 아님). 허위 LOCKED 위험은 E-08과 같음 |
+| T-15 | 마감 직전 반복 정정으로 상위펀드의 판정을 흔듦(예측 불가, 가용성) | – | 각 정정에 **독립 승인자** 서명이 필요하므로 속도 제한 역할. 모든 정정이 체인과 UNKNOWN 가시성 조회에 남음 | 승인자가 공모하거나 승인 비용이 낮으면 제한이 없음. 횟수·시간 상한은 두지 않음(Q14-N2) |
+| T-16 | 독립성 요건 우회: 한 주체가 서로 다른 ID·키·`controllerId`로 운용사와 승인자를 겸함, 또는 최초 설정(genesis)·principal 레지스트리를 오염 | – | I1~I5는 식별자·키·신고 라벨의 상이함만 확인. 키 재사용 거부(`PRINCIPAL_KEY_REUSE`) | **막지 못함.** 실제 독립성은 운영 규약과 외부 신원 확인에 의존(Q14-N6). 최초 설정은 신뢰 지점 |
+| T-17 | 입찰-취소 반복(또는 마감 직전 취소)으로 상위펀드를 UNKNOWN 상태로 흔듦 | – | `afterState` 원자 재기록, UNKNOWN 가시성 조회, 모든 취소가 체인에 남음 | 취소(R15)는 운용사 **단독 서명**이라 승인자 속도 제한이 없고 반복 상한도 두지 않음(Q14-N2, #10 Q10-N5). 잔여 위험 |
 
 ### 6.3 정리
 
 허위 `NON_PARTICIPATION_LOCKED`의 두 갈래(경쟁사 봉쇄 / 용량 부풀리기) 중 **예방으로 직접 통제되는 것은 호출자가 타 운용사일 때(T-01, T-02)뿐**이다. 해당 운용사가 스스로(또는 키 탈취로) 거짓 LOCKED를 기록하는 경우는 원장만으로는 막지 못한다.
 
-D14-Q1 결정으로 달라진 점: ① **마감 전**에는 허위 LOCKED/PARTICIPATING을 운용사+관리자 공동 서명으로 **되돌릴 수 있게** 되었다(예방이 아니라 사후 복구). ② 대가로 마감 전 판정이 흔들릴 수 있고(T-13, T-15) 정정 공동 서명자라는 새 신뢰 지점이 생겼다(T-12). ③ **마감 후**에는 이전과 같이 되돌릴 수 없다. 규정은 소명 후 실제 참여한 경우의 효과를 정하지 않았으므로(A-028) 이 PoC도 마감 후 사후 정정 효과를 모델링하지 않는다.
+D14-Q1 결정으로 달라진 점: ① **마감 전**에는 허위 LOCKED/PARTICIPATING을 운용사+독립 승인자 공동 서명으로 **되돌릴 수 있게** 되었다(예방이 아니라 사후 복구). ② 대가로 마감 전 판정이 흔들릴 수 있고(T-13, T-15) 정정 공동 서명자라는 새 신뢰 지점이 생겼다(T-12). ③ **마감 후**에는 이전과 같이 되돌릴 수 없다. 규정은 소명 후 실제 참여한 경우의 효과를 정하지 않았으므로(A-028) 이 PoC도 마감 후 사후 정정 효과를 모델링하지 않는다.
 
 ### 6.4 단일 원장 운영자 선택의 한계와 잔여 위험 (D14-Q3/Q4)
 
@@ -273,10 +307,32 @@ D14-Q1 결정으로 달라진 점: ① **마감 전**에는 허위 LOCKED/PARTIC
 | 시간 조작 | 시퀀서 시계가 요청 만료(R3), `IPO_CLOSED` 허용 시점(R8), `recordedAt`을 정한다. `requestedAt`은 신뢰하지 않지만 시퀀서 시계를 제3자가 검증할 수는 없다. #10의 `submittedAt`/참여일 D 판정도 같은 시계에 의존한다 | 아니오 |
 | `IPO_CLOSED` 지연으로 창 연장 | R8은 시계가 `closesAt` 이상일 때에만 `IPO_CLOSED`를 허용하지만, **그 이후에도 `IPO_CLOSED`가 추가되기 전까지의 상태·정정 이벤트는 거부 규칙이 없어** 컷오프 앞에 들어간다. 운영자가 `IPO_CLOSED` 추가를 미루면 창이 사실상 길어진다. 완화안(시퀀서 시계 ≥ `closesAt`이면 상태·정정 이벤트 거부)은 #10의 F1(순번 기준)·S-06과 충돌하므로 채택하지 않고 열린 질문으로 둔다(Q14-N3) | 아니오 |
 | 운영자 키 탈취 | 탈취한 키로 `IPO_CLOSED`/`IPO_FINALIZED`/체크포인트를 위조하거나 순번을 임의 부여할 수 있다. 외부에 보관된 체크포인트가 없으면 이력 되감기도 탐지하기 어렵다. 키 관리는 #13 | 아니오 |
-| 운영자와 승인자의 겹침 | PoC에서 운영자, 레지스트리 관리자가 같은 주체이면 정정의 공동 서명이 독립 통제가 아니다(T-12) | 아니오 |
+| 운영자와 승인자의 겹침 | 레지스트리 관리자(정정 승인자)와 원장 운영자가 같은 주체이면 독립 승인으로 인정하지 않는다(R14, I4). 겹치면 정정 기능을 끄므로(fail closed) 겹침 자체가 부정 정정으로 이어지지는 않지만, 마감 전 오기록을 되돌릴 수 없게 된다 | 예 (검사 범위: 식별자·키·신고 라벨) |
 | 단일 장애점 | 운영자가 멈추면 기록·정정·마감·확정이 모두 멈춘다 | 아니오 |
 
 이 표의 항목은 완화책으로 해결됐다고 주장하지 않는다. 다수 운영자·합의 기반 구조는 이 문서의 범위 밖이다.
+
+### 6.4.1 독립 주체 요건과 단일 운영자 한계의 공존
+
+**충돌 지점.** D14-Q3는 원장 운영자를 **한 주체**로 두기로 했다. 정정 승인(R14)은 **운용사·운영자와 독립된 별도 주체**를 요구한다. 두 결정은 운영자를 늘리지 않고도 양립한다: 순번·시간·`IPO_CLOSED`는 계속 단일 운영자가 정하고, 독립성은 **정정 승인이라는 별도 역할**에만 요구한다. 그러나 PoC에서는 레지스트리 관리자와 운영자를 한 주체가 겸하기 쉬워서, 겸하면 R14가 정정을 막는다.
+
+**PoC에서 독립 주체를 확보하는 방법**
+
+| 수단 | 내용 | 시스템이 확인하는가 |
+| --- | --- | --- |
+| 별도 역할·별도 서명 키 | 정정 승인 전용 키를 두고(`AnnulmentApproval`), 운용사·운영자 키와 주소를 겹치지 않게 등록 | 예 (I2, `PRINCIPAL_KEY_REUSE`) |
+| 별도 `controllerId` 신고 | 승인자·운용사·운영자의 통제 주체 라벨을 서로 다르게 신고 | 신고값의 상이함만 확인(I3, I4). 진위는 확인 못 함 |
+| 별도 보관·별도 담당자 | 키를 서로 다른 호스트·HSM·담당자가 보관 | 아니오 (운영 규약) |
+| 확보 불가 시 | 정정 기능을 끈다(fail closed, I5). 마감 전 오기록·키 탈취 후 복구가 불가능해지고, 이는 정정 도입 이전의 동작과 같다 | 예 |
+
+**테스트 환경**에서는 합성 키 3종(운용사, 승인자, 운영자)으로 규칙의 동작을 검증한다. 이는 규칙이 작동함을 보이는 것이지 실제 독립성의 증명이 아니다.
+
+**남는 한계**
+- 한 사람이 여러 키와 서로 다른 `controllerId`를 가질 수 있다(T-16). 시스템은 막지 못한다.
+- 운용사와 승인자의 실제 공모는 막지 못한다(T-12).
+- 최초 설정과 principal 레지스트리 변경의 신뢰: 이를 바꿀 수 있는 주체가 독립성 검사를 무력화할 수 있다.
+- 운영자와 **운용사**의 독립(운영자가 운용사를 겸하는 경우, 같은 그룹 계열)은 이번 결정 범위 밖이며 검사하지 않는다(Q14-N5).
+- 입찰 취소(R15)는 승인자가 필요 없으므로 독립 요건의 대상이 아니다. 대신 속도 제한이 없다(T-17).
 
 ---
 
@@ -285,9 +341,10 @@ D14-Q1 결정으로 달라진 점: ① **마감 전**에는 허위 LOCKED/PARTIC
 ROADMAP의 미결정 항목 "`verifyBid` 통과가 참여 기록을 구속하지 않는 점(검증 후 LOCKED 전환 가능)"에 대한 제안.
 
 - **BIND-1**: 입찰 접수가 확정적으로 받아들여지는 순간(잠정 판정 `ELIGIBLE`)에 시스템이 **입찰 펀드의 `PARTICIPATING`을 원자적으로 기록**한다. 입찰 접수와 기록은 한 트랜잭션이다. 접수가 거부되면 기록하지 않는다.
-- 효과: ① 입찰 후 자기 펀드 LOCKED 전환이 불가능(`PARTICIPATION_ALREADY_RECORDED`). ② 상위펀드는 하위펀드가 입찰한 사실을 `PARTICIPATING`으로 보게 된다(차감).
+- 효과: ① 입찰 후 자기 펀드 LOCKED 전환이 불가능(`PARTICIPATION_ALREADY_RECORDED`). 단 **입찰을 마감 전에 취소하면**(R15) 유효 상태가 입찰 이전인 `UNKNOWN`으로 돌아가고 그 뒤에는 일반 전이로 잠글 수 있다. ② 상위펀드는 하위펀드가 입찰한 사실을 `PARTICIPATING`으로 보게 된다(차감).
 - 한계: 이벤트 서명은 운용사 서명이어야 하므로, BIND-1의 기록은 **입찰 요청에 `LedgerAction` 서명이 동봉되거나** 입찰 요청 자체가 `targetState = "PARTICIPATING"`을 서명 대상으로 포함해야 한다. 어느 쪽이 단순한지는 구현 시 결정(입찰 요청에 `LedgerAction` 서명을 동봉하는 쪽을 제안).
 - **D14-Q2 결정: 독립 `requestParticipation`을 유지한다.** 입찰과 무관하게 자기 펀드의 `PARTICIPATING`을 기록할 수 있다. 이로써 이슈 #10 설계 E-06(서로 보유한 펀드 쌍)이 풀린다(먼저 참여를 기록한 뒤 입찰). 대가로 T-11(사전 선점)이 열려 있다(잔여 위험으로 수용). 독립 선언도 서명된 `LedgerAction`이어야 하고(R1~R4), 마감 전에는 정정할 수 있다(R10, 단 R12가 보호하는 BIND-1 기록은 제외).
+- **입찰 취소와의 관계(결정: 마감 전 가능, 후 불가)**: 취소는 `BidWithdrawal` 서명(운용사 단독, R15)으로 입찰이 만든 `PARTICIPATING`(`origin = BIND_1`)만 `EVENT_ANNULLED(BID_WITHDRAWN)`로 되돌린다. 독립 선언(`origin = INDEPENDENT`) 상태에서 한 입찰의 취소는 원장을 바꾸지 않는다. 입찰의 생애주기(`BID_SUBMITTED`/`BID_REPLACED`/`BID_WITHDRAWN`)와 확정·영수증 처리는 #10 §3.7이 정한다.
 - **정정과의 관계**: BIND-1이 기록한 `PARTICIPATING`은 활성 입찰이 있는 동안 정정할 수 없다(R12). 독립 선언으로 기록한 `PARTICIPATING`은 정정할 수 있다. 같은 상태가 어떤 경로로 기록되었는지 이벤트의 `payload`에 `origin`(`INDEPENDENT` | `BIND_1`, 제안)을 남겨 R12가 구분할 수 있게 한다.
 
 ---
@@ -319,20 +376,33 @@ ROADMAP의 미결정 항목 "`verifyBid` 통과가 참여 기록을 구속하지
 | L-19 | `requestedAt`을 과거로 위조한 요청이 마감 이후 도착 | `IPO_ALREADY_CLOSED`. `requestedAt`은 판정에 쓰이지 않음 |
 | L-20 | 거부 요청 100건 연속 | 체인 길이 불변, 거부 로그에만 기록 |
 | L-21 | 같은 요청 데이터를 키 순서만 바꿔 직렬화 | 같은 `eventHash` (canonical JSON) |
-| L-22 | 마감 전. `manager_x`가 `fund_x`를 `PARTICIPATING`으로 기록(seq=5). `manager_x` 서명(`LedgerAnnulment`, `targetSeq=5`, `targetEventHash` 일치)과 레지스트리 관리자 `AnnulmentApproval`로 정정 | `EVENT_ANNULLED` 추가(seq=6). 유효 상태 `UNKNOWN`. seq=5 이벤트와 체인은 그대로(해시 검증 통과). `getStateAt(fund_x, ipo, 5)`=PARTICIPATING, `getStateAt(..., 6)`=UNKNOWN |
-| L-23 | L-22에서 관리자 승인 없이 운용사 서명만 / 승인만 있고 운용사 서명 없음 | `LEDGER_ANNUL_COSIGN_REQUIRED` / `LEDGER_ACTOR_NOT_FUND_MANAGER` 또는 `LEDGER_SIGNATURE_INVALID`. 원장 불변 |
+| L-22 | (사전조건: 운용사, 승인자, 운영자의 키·`controllerId`가 서로 다름) 마감 전. `manager_x`가 `fund_x`를 `PARTICIPATING`으로 기록(seq=5). `manager_x` 서명(`LedgerAnnulment`, `targetSeq=5`, `targetEventHash` 일치)과 레지스트리 관리자 `AnnulmentApproval`로 정정 | `EVENT_ANNULLED` 추가(seq=6). 유효 상태 `UNKNOWN`. seq=5 이벤트와 체인은 그대로(해시 검증 통과). `getStateAt(fund_x, ipo, 5)`=PARTICIPATING, `getStateAt(..., 6)`=UNKNOWN |
+| L-23 | L-22에서 승인자 서명 없이 운용사 서명만 / 승인만 있고 운용사 서명 없음 | `LEDGER_ANNUL_COSIGN_REQUIRED` / `LEDGER_ACTOR_NOT_FUND_MANAGER` 또는 `LEDGER_SIGNATURE_INVALID`. 원장 불변 |
 | L-24 | `manager_y`(타 운용사)가 `fund_x` 이벤트의 정정 요청(유효 서명, 관리자 승인 포함) | `LEDGER_ACTOR_NOT_FUND_MANAGER`, 원장 불변 (T-02의 정정판) |
 | L-25 | `IPO_CLOSED` 이후 정정 요청 (공동 서명 모두 유효) | `IPO_ALREADY_CLOSED`, 원장 불변. 마감 후 허위 LOCKED는 `FINDING_ANNOTATED`만 가능 |
 | L-26 | 정정 후 같은 요청을 다시 제출 (재전송) / 같은 `requestNonce`에 다른 `targetSeq` | 첫 결과 그대로 반환, 이벤트 1개 / `LEDGER_NONCE_REPLAY` |
 | L-27 | 이미 정정된 이벤트(seq=5)를 다시 정정 / 정정 이벤트(seq=6)를 대상으로 지정 / `targetEventHash` 불일치 / 다른 펀드·IPO의 이벤트 지정 | 모두 `LEDGER_ANNUL_TARGET_INVALID`, 원장 불변 |
 | L-28 | `replacementState = "NON_PARTICIPATION_LOCKED"`로 정정 | `EVENT_ANNULLED`(seq=6) 직후 `NON_PARTICIPATION_LOCKED_RECORDED`(seq=7)가 연속 순번으로 추가됨(사이에 다른 이벤트 없음). 최종 유효 상태 LOCKED |
 | L-29 | L-28에서 `replacementState`가 허용 목록(빈 문자열, `PARTICIPATING`, `NON_PARTICIPATION_LOCKED`) 밖의 값 | 요청 전체 거부, `EVENT_ANNULLED`도 추가되지 않음 (원자성) |
-| L-30 | BIND-1로 기록된 `PARTICIPATING`(활성 입찰 있음)의 정정 요청 / 독립 `requestParticipation`으로 기록된 `PARTICIPATING`의 정정 요청 | `LEDGER_ANNUL_BOUND_TO_BID` / 정상 정정 |
+| L-30 | BIND-1로 기록된 `PARTICIPATING`(활성 입찰 있음, `origin = BIND_1`)을 R10 정정(독립 승인자 포함)으로 되돌리려는 요청 / 독립 `requestParticipation`으로 기록된 `PARTICIPATING`의 R10 정정 요청 | `LEDGER_ANNUL_BOUND_TO_BID` / 정상 정정. 전자의 해소는 입찰 취소(L-39) |
 | L-31 | 정정 요청 이벤트가 `IPO_CLOSED` 직전 순번 / 직후 순번 | 직전: 반영, `ledgerSeqAtClose` 시점 유효 상태가 정정 결과. 직후: `IPO_ALREADY_CLOSED` |
 | L-32 | 키 침해 시나리오: 침해 키로 허위 LOCKED(seq=5) → `MANAGER_KEY_REVOKED`(seq=6) → 새 키 등록 → 새 키 + 관리자 승인으로 정정(마감 전) → 침해 키로 정정 시도 | 정정 성공 후 유효 상태 UNKNOWN. 폐기 이후 침해 키의 새 요청은 `LEDGER_SIGNATURE_INVALID`. 마감 후였다면 정정 불가(L-25) |
 | L-33 | 정정이 포함된 이력에서 임의 시점 `atSeq`별 `getStateAt`, 같은 이력을 키 순서만 바꿔 직렬화 | 정정 반영 전/후 상태가 `atSeq`에 따라 일관. 같은 `eventHash`(canonical JSON, L-21과 동일) |
+| L-34 | 정정 요청에서 `approverId == actorId` (같은 ID가 두 서명) | `LEDGER_ANNUL_APPROVER_NOT_INDEPENDENT`, 원장 불변 (I1) |
+| L-35 | 서로 다른 ID로 서명했으나 복구한 주소가 같음 (같은 키로 두 서명) | `LEDGER_ANNUL_APPROVER_NOT_INDEPENDENT`, 원장 불변 (I2) |
+| L-36 | 승인자 `controllerId`가 운용사 `controllerId`와 같음 | `LEDGER_ANNUL_APPROVER_NOT_INDEPENDENT`, 원장 불변 (I3) |
+| L-37 | 승인자 principal이 원장 운영자 principal과 같음(주소 또는 `controllerId`가 같음, 즉 레지스트리 관리자와 운영자가 같은 주체). 설정 로드 시 / 정정 요청 시 | 설정이 I4를 위반하면 정정 기능 비활성: 요청은 `LEDGER_ANNUL_DISABLED`. 다른 기능(L-01, L-11, L-39)은 정상. 승인자만 운영자와 같은 요청이 들어오면 `LEDGER_ANNUL_APPROVER_NOT_INDEPENDENT` (I4, I5) |
+| L-38 | 같은 서명 주소를 두 principal에 등록하려는 시도 | `PRINCIPAL_KEY_REUSE`, 등록 거부 |
+| L-39 | 입찰 취소(정상): `fund_x`가 입찰로 `PARTICIPATING`(`origin = BIND_1`, `bidId = bid_1`), `manager_x`가 `BidWithdrawal` 서명(`afterState = ""`)만 제출. **승인자 서명 없음** | 성공. `EVENT_ANNULLED(reason = BID_WITHDRAWN, bidId = bid_1)` 추가, 유효 상태 `UNKNOWN`, 입찰 `WITHDRAWN` (R15) |
+| L-40 | L-39에서 `afterState = "NON_PARTICIPATION_LOCKED"` / 서명 후 `afterState`를 바꿔 제출 | 성공 시 `EVENT_ANNULLED` 직후 연속 순번으로 `NON_PARTICIPATION_LOCKED_RECORDED`(`origin = INDEPENDENT`), 유효 상태 `LOCKED` / 변조 시 `LEDGER_SIGNATURE_INVALID`, 원장 불변 |
+| L-41 | `IPO_CLOSED` 이후 취소 요청 | `IPO_ALREADY_CLOSED`, 원장·입찰 불변 |
+| L-42 | 타 운용사 서명으로 취소 요청 | `LEDGER_ACTOR_NOT_FUND_MANAGER`, 원장·입찰 불변 |
+| L-43 | `origin = INDEPENDENT`인 `PARTICIPATING` 펀드의 입찰 취소 / 바인딩 없는 입찰의 취소 | 원장 이벤트 없음. 입찰만 `WITHDRAWN` |
+| L-44 | 취소 요청이 `IPO_CLOSED` 직전 순번 / 직후 순번 | 직전: 반영, 컷오프 유효 상태 `UNKNOWN`. 직후: `IPO_ALREADY_CLOSED` |
+| L-45 | 같은 취소 요청 재전송 / 이미 취소된 `bidId`를 새 nonce로 취소 | 첫 결과 그대로, 이벤트 1개 / `BID_ALREADY_WITHDRAWN`, 새 이벤트 없음 |
+| L-46 | 재제출(대체)이 있은 뒤 취소 | 대체 때 원장 이벤트 없음. 취소 때 `EVENT_ANNULLED(BID_WITHDRAWN)` 한 번 |
 
-공격 시나리오와의 대응: T-01, T-02 → L-02, T-03 → L-03~L-08, T-05 → L-16, L-32, T-06 → L-13(검출 한정), T-08 → L-22, T-10 → L-04, T-12 → L-22/L-23(공모는 막지 못함을 문서화), T-13 → L-28, L-31, T-14 → L-30. T-15는 시나리오로 검증할 수 없고 체인 가시성(L-22, L-33)에만 의존한다.
+공격 시나리오와의 대응: T-01, T-02 → L-02, T-03 → L-03~L-08, T-05 → L-16, L-32, T-06 → L-13(검출 한정), T-08 → L-22, T-10 → L-04, T-12 → L-34~L-37(동일 주체 거부, 공모는 막지 못함을 문서화), T-16 → L-38(키 재사용만 검출, 나머지는 한계), T-17 → L-39~L-46(속도 제한 없음을 문서화), T-13 → L-28, L-31, T-14 → L-30, L-39. T-15는 시나리오로 검증할 수 없고 체인 가시성(L-22, L-33)에만 의존한다.
 
 ---
 
@@ -350,7 +420,9 @@ ROADMAP의 미결정 항목 "`verifyBid` 통과가 참여 기록을 구속하지
 | (새) P14-A02 | 하위펀드 상태를 **하위펀드 운용사**가 기록한다(규정은 상위 기관투자자가 소명). 규정과 다른 PoC 선택 | 가정 |
 | (새) P14-A03 | 시퀀서(원장 운영자)는 단일 주체이며 순번과 시간 기준을 정하고 `IPO_CLOSED`를 시계에 맞게 추가한다(TA-1). **결정됨(진영 님 위임 판단, 2026-10-03)**. 규정 요구가 아닌 PoC 단순화이며 한계는 §6.4 | PoC 단순화 (결정) |
 | (새) P14-A04 | 마감 전 원장 정정을 허용하고 마감 후에는 허용하지 않는다(D14-Q1 결정). 규정상 정정·취소 규칙은 확인하지 못했다(#10 P10-A10과 같은 미확인 영역) | PoC 정책 (결정), 규정 미확인 |
-| (새) P14-A05 | 정정 공동 서명자는 레지스트리 관리자(PoC 단일 주체)이다. 실제 독립성과 쿼럼은 #13에서 설계하며, PoC에서는 운영자와 같은 주체일 수 있다(T-12) | 가정 |
+| (새) P14-A05 | 정정 승인자는 레지스트리 관리자 역할이며 **운용사 서명자 및 원장 운영자와 독립된 주체**여야 한다(결정, 2026-10-03). 독립성은 식별자·키·신고된 `controllerId` 수준에서만 시스템이 확인한다(§4.5) | PoC 통제 (결정) |
+| (새) P14-A06 | `controllerId`는 자기 신고 값이며 외부에서 검증되지 않는다. 최초 설정(genesis)의 principal 등록은 신뢰한다 | 가정 |
+| (새) P14-A07 | 마감 전 입찰 취소 가능, 마감 후 불가(결정, 2026-10-03). 규정상 참여 후 취소 가능 여부는 확인하지 못했다(#10 P10-A10, P10-A14) | PoC 정책 (결정), 규정 미확인 |
 
 `P14-Axx`는 이 문서가 새로 두는 가정이며 ASSUMPTIONS에는 아직 없다.
 
@@ -366,20 +438,24 @@ ROADMAP의 미결정 항목 "`verifyBid` 통과가 참여 기록을 구속하지
 
 | ID | 결정 | 반영 위치 |
 | --- | --- | --- |
-| D14-Q1 | 마감 전 정정 **허용**, 마감 후 변경 불가. `EVENT_ANNULLED`로 해시 체인을 깨지 않고 정정(이전 제안 (b)를 확정). 공동 서명은 운용사 키 + 레지스트리 관리자(쿼럼은 #13에서) | §2.3, §3.2, §4.2 R10~R13, §4.4, §5.1, §6, §8 L-22~L-33 |
+| D14-Q1 | 마감 전 정정 **허용**, 마감 후 변경 불가. `EVENT_ANNULLED`로 해시 체인을 깨지 않고 정정(이전 제안 (b)를 확정). 공동 서명은 운용사 키 + 레지스트리 관리자 역할의 승인자(운용사·운영자와 독립된 주체여야 함, R14)(쿼럼은 #13에서) | §2.3, §3.2, §4.2 R10~R13, §4.4, §5.1, §6, §8 L-22~L-33 |
 | D14-Q2 | 독립 `requestParticipation` **유지** (T-11은 잔여 위험으로 수용, E-06 해소) | §7, §6.2 T-11 |
 | D14-Q3 | 원장 운영자: 진영 님 임의 판단 위임 → **단일 운영자(PoC 단순화)** | §6.4, P14-A03 |
 | D14-Q4 | 시간 권위: 위임 → **시퀀서 시계, 외부 시간 증명 없음** (한계 명시) | §6.4, P14-A03 |
 | (#11) | v2와 `blindingSalt` 보류. 이 문서는 v2 필드에 의존하지 않음 | 헤더 |
+| Q14-N1 (추가 결정) | 정정 승인자는 운용사 서명자와 **독립된 주체**여야 함. 동일 주체 서명은 거부, 레지스트리 관리자와 원장 운영자가 같은 주체여도 독립 승인으로 인정 불가 | §4.2 R14, §4.5, §6.4.1, L-34~L-38 |
+| Q14-N4 (추가 결정) | **마감 전 입찰 취소 가능**, 마감 후 불가 | §4.2 R15, §7, L-39~L-46 |
 
 **결정 반영 중 생긴 새 열린 질문**
 
 | ID | 질문 | 기본 제안 |
 | --- | --- | --- |
-| Q14-N1 | 정정 공동 서명자를 누구로 할 것인가? (레지스트리 관리자 단일 / 쿼럼 / 운영자) PoC에서 운영자와 관리자가 같은 주체이면 독립 승인이 아니다 | 레지스트리 관리자 단일(PoC), 쿼럼은 #13. 운영자와 겹침은 §6.4에 한계로 기록 |
-| Q14-N2 | 정정 횟수나 마감 임박 시간대에 상한을 둘 것인가? | 두지 않는다. 공동 서명이 속도 제한 역할을 하고 모든 정정이 체인에 남는다. 수치 근거가 없으므로 값을 정하지 않는다 |
+| Q14-N1 | ~~정정 공동 서명자를 누구로 할 것인가?~~ | **결정됨**: 독립된 주체(R14). 쿼럼 구성은 여전히 #13 |
+| Q14-N2 | 정정·입찰 취소의 횟수나 마감 임박 시간대에 상한을 둘 것인가? 정정은 독립 승인자가 속도 제한 역할을 하지만 **입찰 취소는 운용사 단독 서명이라 제한이 없다**(T-17, #10 Q10-N5) | 두지 않는다. 수치 근거가 없으므로 값을 정하지 않는다. 보안QA 검토 항목 |
 | Q14-N3 | `IPO_CLOSED` 지연으로 창이 연장되는 공백(§6.4)을 막기 위해 "시퀀서 시계 ≥ `closesAt`이면 상태·정정 이벤트 거부" 규칙을 둘 것인가? #10의 F1(순번 기준)·S-06을 바꿔야 한다 | 이 문서는 채택하지 않고 한계로 기록. 보안QA 검토 후 결정 |
-| Q14-N4 | 마감 전 입찰 취소를 허용할 것인가? (R12의 BIND-1 기록 정정 불가와 #10 Q10-N4) | 허용하지 않음(재제출 대체만) |
+| Q14-N4 | ~~마감 전 입찰 취소를 허용할 것인가?~~ | **결정됨**: 마감 전 가능, 후 불가(R15) |
+| Q14-N5 | 독립 요건을 **운영자와 운용사**(운영자가 운용사를 겸하거나 같은 그룹 계열인 경우)에도 확장할 것인가? 이번 결정은 정정 승인자와 운용사 서명자, 그리고 승인자와 운영자의 분리까지다 | 확장하지 않음(범위 밖). 소유자 판단 |
+| Q14-N6 | `controllerId`의 진위를 확인할 외부 수단(법인 확인, 별도 증명)이 필요한가? 현재는 자기 신고(P14-A06)이고 T-16은 막지 못한다 | PoC에서는 자기 신고 + 운영 규약. 실제 확인 수단은 미확인 |
 
 ---
 
@@ -387,10 +463,10 @@ ROADMAP의 미결정 항목 "`verifyBid` 통과가 참여 기록을 구속하지
 
 | 담당 | 작업 |
 | --- | --- |
-| 구현 봇 (#15 등) | 이벤트 봉투와 해시 체인, 서명된 요청 검증(#11의 서명 유틸 재사용, v1 규칙 그대로), 이벤트 접기(fold)로 유효 상태 도출과 `getStateAt`, `IPO_CLOSED`/`IPO_FINALIZED`, **`EVENT_ANNULLED`와 공동 서명 검증(R10~R13), 정정+재기록 원자 처리**, `payload.origin` 구분, 거부 로그, BIND-1, §8 시나리오(L-01~L-33) 테스트. 이 PR은 구현을 포함하지 않음 |
-| 보안QA | 이 문서 §4, §6의 권한 모델 리뷰(#14 리뷰 항목), 정정 도입에 따른 새 공격면(T-12~T-15)과 §6.4 단일 운영자 한계 검토, Q14-N3(`IPO_CLOSED` 지연) 판단, `THREAT_MODEL.md`의 "Unauthorized state transition" 행 갱신(보안QA 담당 규칙) |
+| 구현 봇 (#15 등) | 이벤트 봉투와 해시 체인, 서명된 요청 검증(#11의 서명 유틸 재사용, v1 규칙 그대로), 이벤트 접기(fold)로 유효 상태 도출과 `getStateAt`, `IPO_CLOSED`/`IPO_FINALIZED`, **`EVENT_ANNULLED`와 공동 서명 검증(R10~R13), 승인자 독립성 검사 R14(I1~I5, `PRINCIPAL_KEY_REUSE`, 설정 시 `LEDGER_ANNUL_DISABLED`), 입찰 취소 경로 R15(`BidWithdrawal` 서명, `afterState`, 입찰 저장소 연동), 정정+재기록 원자 처리**, `payload.origin` 구분, 거부 로그, BIND-1, §8 시나리오(L-01~L-46) 테스트. 이 PR은 구현을 포함하지 않음 |
+| 보안QA | 이 문서 §4, §6의 권한 모델 리뷰(#14 리뷰 항목), 정정 도입에 따른 새 공격면(T-12~T-17), 독립성 검사(R14)의 우회 가능성과 최초 설정 신뢰(T-16), 입찰 취소 반복(T-17)과 §6.4 단일 운영자 한계 검토, Q14-N3(`IPO_CLOSED` 지연) 판단, `THREAT_MODEL.md`의 "Unauthorized state transition" 행 갱신(보안QA 담당 규칙) |
 | 리서치 | #11 서명 스키마(별도 PR), #13 키 관리·쿼럼(D14-Q1 연동), #18 온체인 설계 |
-| 소유자(진영) | 반영된 결정 확인. 새 열린 질문 Q14-N1 ~ N4 |
+| 소유자(진영) | 반영된 결정 확인(Q14-N1, N4 해소). 남은 열린 질문 Q14-N2, N3, N5, N6 |
 | 리드 봇 | `ROADMAP.md` 미결정 항목(입찰 통과와 기록의 결합)과 `THREAT_MODEL.md`의 관련 서술 정리, P14-Axx의 ASSUMPTIONS 편입 여부 |
 
 ## 11. 출처
