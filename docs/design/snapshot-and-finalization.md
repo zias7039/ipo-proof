@@ -5,7 +5,7 @@
 
 - 작성: 리서치 봇. 이슈: #10 (`Refs #10`). 상태: **설계 제안 (코드 변경 없음)**. 구현은 'IPO Proof 구현' 봇 몫입니다(§9).
 - 전제 결정: 이슈 #10 코멘트(2026-10-03, 진영) — **UNKNOWN 하위펀드는 차감+플래그가 아니라 거부(reject)**. 이 문서는 그 결정을 바꾸지 않고, 결정 위에서 스냅샷·마감 확정을 설계합니다.
-- 코드 기준: `main`(커밋 8e1ab58). UNKNOWN 거부의 구현은 아직 병합되지 않은 PR #23(`fix/reject-unknown-underlying-participation`)에 있고, 이 문서는 그 동작(`UNDERLYING_PARTICIPATION_UNKNOWN`, `determined: false`)을 전제로 합니다. 서명 검증은 PR #24(EIP-712)에 있으며 역시 미병합입니다.
+- 코드 기준: `main`(커밋 3fa59ef, 2026-10-03 확인). UNKNOWN 거부 구현(PR #23, `UNDERLYING_PARTICIPATION_UNKNOWN`, `determined: false`)과 EIP-712 서명 검증(PR #24)은 이미 `main`에 병합되어 있고, 이 문서는 그 동작을 전제로 합니다. 문서 초안 작성 시점(커밋 8e1ab58)에는 두 PR이 미병합이었으므로, 아래 'PR #23/#24' 표기는 병합된 PR의 변경을 가리킵니다.
 - 관련 설계 문서(별도 PR, 아직 병합 전일 수 있음): 원장 이벤트·권한은 이슈 #14, 서명 스키마는 이슈 #11.
 
 ## 0. 요약 (결론 먼저)
@@ -168,7 +168,7 @@ UNKNOWN을 차감하던 이전 안(`DEMO_RULE_V1` 현행)에서는 "UNKNOWN이�
 
 - **IPO별 규칙 고정**: IPO 레코드에 `ruleVersionId`와 `ruleSpecDigest`를 입찰 창 개시 전에 기록하고, 창 개시 후 변경을 거부한다. 선택 기준일은 증권신고서 최초 제출일(A-001, A-002)이다. 현재 `VerifyBidDeps.activeRuleVersion`은 전역 하나이므로 IPO별 조회로의 확장이 필요하다(구현 몫).
 - **불변 원칙**: 한 번이라도 확정에 쓰인 규칙 버전 ID의 의미(산식, 파라미터, UNKNOWN 처리)는 바꾸지 않는다. 의미가 바뀌면 새 ID를 쓴다. `ruleSpecDigest`는 이 원칙을 기계적으로 확인하는 수단이다(예: `maxAttestationAgeMs` 같은 파라미터가 바뀌면 다이제스트가 바뀐다).
-- **증빙 고정**: 입찰은 접수 시 `attestationDigest`를 고정한다. 확정 시 증빙을 다시 조회하지 않고 고정된 다이제스트에 해당하는 증빙을 사용한다. 증빙이 입찰 후 교체되어도 확정에 영향이 없다. (PR #24의 저장소는 `(fundId, ipoId)`당 최신 증빙만 서빙하고 교체된 증빙은 내부에 보존만 하므로, 다이제스트/`attestationId`로 조회하는 메서드가 구현 항목으로 필요하다.)
+- **증빙 고정**: 입찰은 접수 시 `attestationDigest`를 고정한다. 확정 시 증빙을 다시 조회하지 않고 고정된 다이제스트에 해당하는 증빙을 사용한다. 증빙이 입찰 후 교체되어도 확정에 영향이 없다. (`main`에 병합된 PR #24의 저장소는 `(fundId, ipoId)`당 최신 증빙만 서빙하고 교체된 증빙은 내부에 보존만 하므로, 다이제스트/`attestationId`로 조회하는 메서드가 구현 항목으로 필요하다.)
 - **정렬 고정**: 해시에 들어가는 모든 목록(하위펀드, 상태)은 펀드 ID의 코드 단위 순서로 정렬한다. 같은 집합이면 입력 순서와 무관하게 같은 다이제스트가 나와야 한다(S-14).
 
 ### 3.6 재현 절차
@@ -323,8 +323,8 @@ ASSUMPTIONS의 `A-xxx`는 그 문서의 정의를 따르며 이 문서에서 의
 
 ## 7. 다른 문서·PR과의 관계
 
-- **PR #23(UNKNOWN 거부 구현)**: 이 문서의 전제. 코드·ARCHITECTURE·README·ROADMAP·`scenarios.md` 변경은 그 PR에 있다. 이 문서는 해당 파일을 수정하지 않는다. Codex 리뷰의 규칙 버전 ID 지적은 §1 주와 §3.5에서 다뤘다.
-- **PR #24(EIP-712 검증)**: `attestationDigest`는 거기서 구현된 `attestationDigest()`(EIP-712 서명 대상 다이제스트)를 가리킨다. 기준일 필드 추가와 `blindingSalt`는 #11 설계 문서(PR #28)가 v2 제안으로 다룬다. PR #24의 저장소는 새 증빙이 `issuedAt` 엄격 증가일 때만 교체를 허용한다(게시 관문).
+- **PR #23(UNKNOWN 거부 구현, 병합됨)**: 이 문서의 전제. 코드·ARCHITECTURE·README·ROADMAP·`scenarios.md` 변경은 그 PR에 있었다. 이 문서는 해당 파일을 수정하지 않는다. Codex 리뷰의 규칙 버전 ID 지적은 §1 주와 §3.5에서 다뤘다.
+- **PR #24(EIP-712 검증, 병합됨)**: `attestationDigest`는 거기서 구현된 `attestationDigest()`(EIP-712 서명 대상 다이제스트)를 가리킨다. 기준일 필드 추가와 `blindingSalt`는 #11 설계 문서(PR #28)가 v2 제안으로 다룬다. `main`의 저장소는 새 증빙이 `issuedAt` 엄격 증가일 때만 교체를 허용한다(게시 관문).
 - **이슈 #14**: 원장 이벤트 스키마(해시 체인, `IPO_CLOSED` 이벤트, 호출자 인가)와 접수 영수증은 #14 설계 문서가 정한다. 이 문서는 필요한 인터페이스(`ledgerSeqAtClose`, `ledgerHeadHashAtClose`, `IPO_ALREADY_CLOSED`)만 요구한다.
 - **충돌 지점(수정하지 않고 알림)**: `README.md`의 "no regulatory research is included here" 문장, `ARCHITECTURE.md`의 "Not in this slice … regulatory research"와 UNKNOWN 서술, `ROADMAP.md`의 #10 행·미결정 항목, `REGULATORY_ASSUMPTIONS.md`의 `DEMO_RULE_V1` 비교표(UNKNOWN 서술)는 리드 봇이 고치는 대상이다. `ARCHITECTURE.md`가 "판정 시점 스냅샷·마감 확정은 이슈 #10에서 열려 있음"이라고 적은 부분은 이 설계가 채택되면 이 문서 링크로 바꾸는 것이 좋다.
 
