@@ -6,3 +6,4 @@ export * from "./hash.js";
 export * from "./attestation.js";
 export * from "./registry.js";
 export * from "./verify.js";
+export * from "./eip712.js";

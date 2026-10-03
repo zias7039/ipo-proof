@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalJson } from "../src/hash.js";
+import type { ParticipationLookup } from "../src/participation.js";
 import { DEMO_RULE_V1 } from "../src/rules.js";
 import { PROOF_HASH_KIND, buildReceipt, verifyBid } from "../src/verify.js";
 import { HOUR, NOW, att, makeEnv } from "./fixtures.js";
@@ -153,7 +154,7 @@ describe("verifyBid: attestation integrity checks", () => {
     const { deps, store } = makeEnv();
     const original = att({ attestationId: "att_orig", fundId: "fund_z", nonce: "nonce_1" });
     // nonce_1 was already bound to att_1 by makeEnv; a different attestation reusing it is a replay.
-    expect(store.publish(original)).toBe(false);
+    expect(store.publish(original)).toEqual({ ok: false, reasonCode: "NONCE_ALREADY_BOUND" });
     const replay = att({ attestationId: "att_replay", nonce: "nonce_1" });
     const r = verifyBid(bid(1n), { ...deps, attestations: { getAttestation: () => replay } });
     expect(r).toMatchObject({ eligible: false, reasonCode: "ATTESTATION_NONCE_REPLAY" });
@@ -204,19 +205,114 @@ describe("verifyBid: underlying exposure completeness", () => {
   });
 });
 
-describe("verifyBid: UNKNOWN underlying participation is never exempt", () => {
-  it("deducts UNKNOWN underlying exposure (conservative) and flags it instead of exempting it", () => {
-    // Nothing recorded: fund_b and fund_c are both UNKNOWN => 30bn - 6bn - 4bn = 20bn.
+describe("verifyBid: UNKNOWN underlying participation is rejected (never exempt, never assumed)", () => {
+  it("rejects when every underlying fund is UNKNOWN, for any bid size", () => {
     const { deps, ledger } = makeEnv({ recordStates: false });
+    expect(ledger.getState("fund_b", "ipo_1")).toBe("UNKNOWN");
     expect(ledger.getState("fund_c", "ipo_1")).toBe("UNKNOWN");
-    const ok = verifyBid(bid(20_000_000_000n), deps);
-    expect(ok).toMatchObject({ eligible: true, reasonCode: "ELIGIBLE" });
-    expect(ok.flags).toEqual(["UNKNOWN_UNDERLYING_DEDUCTED"]);
-    // 24bn would pass if fund_c were wrongly treated as exempt; it must not.
-    expect(verifyBid(bid(24_000_000_000n), deps)).toMatchObject({
-      eligible: false,
-      reasonCode: "BID_EXCEEDS_ADJUSTED_CAPACITY",
+    for (const amount of [1n, 20_000_000_000n, 24_000_000_000n, 25_000_000_000n]) {
+      const r = verifyBid(bid(amount), deps);
+      expect(r).toMatchObject({ eligible: false, reasonCode: "UNDERLYING_PARTICIPATION_UNKNOWN", flags: [] });
+    }
+  });
+
+  it("rejects a mixed case: one underlying fund known, the other UNKNOWN (either way round)", () => {
+    const a = makeEnv({ recordStates: false });
+    a.ledger.requestParticipation("fund_b", "ipo_1"); // fund_c stays UNKNOWN
+    expect(verifyBid(bid(1n), a.deps).reasonCode).toBe("UNDERLYING_PARTICIPATION_UNKNOWN");
+    const b = makeEnv({ recordStates: false });
+    b.ledger.requestNonParticipationLock("fund_c", "ipo_1"); // fund_b stays UNKNOWN
+    expect(verifyBid(bid(1n), b.deps).reasonCode).toBe("UNDERLYING_PARTICIPATION_UNKNOWN");
+  });
+
+  it("evaluates normally once the UNKNOWN fund is recorded, and verifyBid itself records nothing", () => {
+    const { deps, ledger } = makeEnv({ recordStates: false });
+    expect(verifyBid(bid(1n), deps).reasonCode).toBe("UNDERLYING_PARTICIPATION_UNKNOWN");
+    expect(ledger.history()).toEqual([]);
+    ledger.requestParticipation("fund_b", "ipo_1");
+    ledger.requestNonParticipationLock("fund_c", "ipo_1");
+    expect(verifyBid(bid(24_000_000_000n), deps)).toMatchObject({ eligible: true, reasonCode: "ELIGIBLE" });
+  });
+
+  it("only participation in the same IPO counts: a record for another IPO leaves the fund UNKNOWN", () => {
+    const { deps, ledger } = makeEnv({ recordStates: false });
+    ledger.requestParticipation("fund_b", "ipo_2");
+    ledger.requestNonParticipationLock("fund_c", "ipo_2");
+    expect(verifyBid(bid(1n), deps).reasonCode).toBe("UNDERLYING_PARTICIPATION_UNKNOWN");
+  });
+
+  it("earlier checks still win: an omitted underlying fund is reported before UNKNOWN participation", () => {
+    const omitted = att({ underlyingExposures: [{ fundId: "fund_c", exposureKrw: 4_000_000_000n }] });
+    const { deps } = makeEnv({ attestation: omitted, recordStates: false });
+    expect(verifyBid(bid(1n), deps).reasonCode).toBe("UNDERLYING_EXPOSURE_OMITTED");
+  });
+
+  it("rejects when the participation lookup returns unexpected values or throws (fail-closed)", () => {
+    const { deps } = makeEnv();
+    const cases: [string, () => unknown][] = [
+      ["undefined", () => undefined],
+      ["null", () => null],
+      ["empty string", () => ""],
+      ["lowercase unknown", () => "unknown"],
+      ["padded participating", () => "PARTICIPATING "],
+      ["arbitrary string", () => "LOCKED"],
+      ["throws", () => { throw new Error("ledger unavailable"); }],
+    ];
+    for (const [name, f] of cases) {
+      // The bidding fund's own state is read through the same lookup; only the underlying funds matter here.
+      const underlyingOnly: ParticipationLookup = {
+        getState: (fundId, ipoId) => (fundId === "fund_a" ? deps.participation.getState(fundId, ipoId) : (f() as never)),
+      };
+      expect(verifyBid(bid(1n), { ...deps, participation: underlyingOnly }), name).toMatchObject({
+        eligible: false,
+        reasonCode: "UNDERLYING_PARTICIPATION_UNKNOWN",
+      });
+    }
+  });
+
+  it("earlier exposure checks (duplicate, not in registry) are also reported before UNKNOWN participation", () => {
+    const dup = att({
+      underlyingExposures: [
+        { fundId: "fund_b", exposureKrw: 1n },
+        { fundId: "fund_b", exposureKrw: 1n },
+        { fundId: "fund_c", exposureKrw: 1n },
+      ],
     });
+    expect(verifyBid(bid(1n), makeEnv({ attestation: dup, recordStates: false }).deps).reasonCode).toBe("DUPLICATE_UNDERLYING_EXPOSURE");
+    const extra = att({
+      underlyingExposures: [
+        { fundId: "fund_b", exposureKrw: 1n },
+        { fundId: "fund_c", exposureKrw: 1n },
+        { fundId: "fund_x", exposureKrw: 1n },
+      ],
+    });
+    expect(verifyBid(bid(1n), makeEnv({ attestation: extra, recordStates: false }).deps).reasonCode).toBe(
+      "UNDERLYING_EXPOSURE_NOT_IN_REGISTRY",
+    );
+  });
+
+  it("the receipt for an UNKNOWN rejection carries no amounts and no underlying fund ids", () => {
+    const { deps } = makeEnv({ recordStates: false });
+    const r = verifyBid(bid(1n), deps);
+    const receipt = buildReceipt({
+      fundId: "fund_a",
+      ipoId: "ipo_1",
+      ruleVersion: r.ruleVersion,
+      attestationId: "att_1",
+      attesterId: "attester_1",
+      eligible: false,
+      reasonCode: r.reasonCode,
+      flags: r.flags,
+      verifiedAt: r.verifiedAt,
+    });
+    expect(r.proofHash).toBe(createHash("sha256").update(canonicalJson(receipt), "utf8").digest("hex"));
+    expect(JSON.stringify(receipt)).not.toMatch(/fund_b|fund_c/);
+  });
+
+  it("the bidding fund's own UNKNOWN state is still allowed when the underlying funds are known", () => {
+    const { deps, ledger } = makeEnv();
+    expect(ledger.getState("fund_a", "ipo_1")).toBe("UNKNOWN");
+    expect(verifyBid(bid(1n), deps).eligible).toBe(true);
   });
 
   it("flags are empty when every underlying state is known", () => {

@@ -32,11 +32,9 @@
 
 - **사전조건**: `recordStates: false` — `fund_b`, `fund_c` 모두 원장에 기록 없음(= UNKNOWN). UNKNOWN은 비참여가 아니다.
 - **입력**: `bidAmount = 200억`, 이어서 `240억`.
-- **기대 결과(소유자 결정 #10, 2026-10-03: 거부)**: UNKNOWN 하위펀드가 하나라도 있으면 `eligible=false`이고 조정 용량은 산출하지 않는다(새 reasonCode `UNDERLYING_PARTICIPATION_UNKNOWN`, 입찰 크기와 무관, `flags=[]`). 입찰 펀드 자신이 UNKNOWN인 것은 허용(아직 기록 전). 이 동작은 열린 PR #23에서 구현되었으며 **PR #23 병합 전까지 `main` 코드는 아래 이전 동작을 유지한다.**
-- **병합 전 `main`의 동작(차감+플래그, 대체 예정)**: UNKNOWN 노출은 PARTICIPATING처럼 차감되어 조정 용량 = 300억 − 60억 − 40억 = **200억**. 200억은 통과하며 `flags=[UNKNOWN_UNDERLYING_DEDUCTED]`, 240억은 `BID_EXCEEDS_ADJUSTED_CAPACITY`.
-- **남은 미결정**: 판정 시점 스냅샷과 마감 확정(finalization) 규칙은 이슈 #10에서 계속 설계 중.
-- **커버하는 테스트**: `rules.test.ts` "UNKNOWN underlying exposure is NOT exempt...", "UNKNOWN is treated exactly like PARTICIPATING for the number...", `verify.test.ts` "deducts UNKNOWN underlying exposure (conservative) and flags it", "allows the bidding fund's own state to be UNKNOWN", `participation.test.ts` "treats absence as UNKNOWN".
-- **공백**: 일부만 UNKNOWN인 혼합 케이스의 `verifyBid` 수준 테스트 없음. UNKNOWN이 나중에 LOCKED로 바뀌면 이미 내려간 판정이 달라지는 문제(검증 시점 스냅샷)는 미모델링.
+- **기대 결과(정책: 거부, 이슈 #10 결정 2026-10-03)**: 어떤 금액이든(200억, 240억, 1) `eligible=false`, `reasonCode=UNDERLYING_PARTICIPATION_UNKNOWN`, `flags=[]`. UNKNOWN 노출은 차감도 면제도 되지 않으며 조정 용량 자체가 산출되지 않는다. 일부만 UNKNOWN이어도 거부. 하위펀드 상태가 기록되면 같은 입찰이 정상 평가된다(`recordStates` 기본값 시 240억 통과). 입찰 펀드 자신이 UNKNOWN인 것은 허용(아직 기록 전).
+- **커버하는 테스트**: `rules.test.ts` "UNKNOWN underlying exposure is NOT exempt and yields no capacity...", "UNKNOWN is neither deducted like PARTICIPATING nor exempt like LOCKED", "a single UNKNOWN among known funds..."; `verify.test.ts` "verifyBid: UNKNOWN underlying participation is rejected" 블록(전부 UNKNOWN, 혼합, 기록 후 정상 평가, 다른 IPO 기록은 무효, 누락 노출이 먼저 보고됨, 영수증에 금액·하위펀드 id 없음, 입찰 펀드 자신의 UNKNOWN 허용); `demo.test.ts` "UNKNOWN underlying funds are rejected, not deducted"; `participation.test.ts` "treats absence as UNKNOWN".
+- **공백**: 하위펀드 운용사가 기록을 늦추면 상위펀드가 막힌다(가용성/DoS, 이슈 #10에서 계속 검토). UNKNOWN이 나중에 LOCKED로 바뀌면 이미 내려간 판정이 달라지는 문제(검증 시점 스냅샷)는 미모델링.
 
 ## D. 참여/비참여 상태 충돌 및 노출 누락·중복
 
@@ -52,7 +50,7 @@
 - **입력**: 폐기된 `att_1`; 만료 이후 시점; 발급 후 24시간 초과(만료 전); 발급 이전 시점; 같은 어테스터·nonce를 다른 `attestationId`가 재사용; 규칙 버전 불일치; 허용목록에 없는 어테스터; 청약 창 밖 시점.
 - **기대 결과**: 각각 `ATTESTATION_REVOKED`, `ATTESTATION_EXPIRED`(만료 시각 경계 배타적), `ATTESTATION_STALE`, `ATTESTATION_NOT_YET_VALID`, `ATTESTATION_NONCE_REPLAY`, `RULE_VERSION_MISMATCH`, `ATTESTER_UNAUTHORIZED`, `IPO_NOT_OPEN`. 동일 어테스테이션의 재검증은 재생이 아니다.
 - **커버하는 테스트**: `demo.test.ts` (폐기, 만료, 규칙 버전), `verify.test.ts` "attestation integrity checks" 전체(권한, 폐기, 만료 경계, not-yet-valid, stale, nonce 재생, 재검증), "rejects unregistered fund, unknown IPO, IPO outside window", `attestation.test.ts`.
-- **공백**: **서명 위조는 막지 못한다** — 서명 검증 미구현이며 허용목록 검증기는 `signature`를 무시한다(이슈 #11, #12; `SIGNATURE_INVALID`는 reason code만 존재하고 테스트 없음). 폐기 목록의 최신성/가용성, nonce 저장소 영속성(재시작 시 소실) 미검증. 동시에 둘 이상의 사유가 해당될 때의 우선순위는 `verifyBid` 주석의 검사 순서에만 문서화되어 있고 조합 테스트 없음.
+- **공백**: **서명 위조**: `Eip712AttestationVerifier`를 주입하면 등록된 키가 아닌 서명·필드 변조·가변(high-s) 서명·다른 도메인 서명은 `SIGNATURE_INVALID`로 거부된다(`eip712.test.ts`, `eip712-verifybid.test.ts`). 단, 허용목록 검증기(`AllowlistAttestationVerifier`)는 여전히 `signature`를 무시하며, 침해된 허가 어테스터가 서명한 허위 데이터·키 교체/폐기는 막지 못한다. 폐기 목록의 최신성/가용성, nonce 저장소 영속성(재시작 시 소실) 미검증. 동시에 둘 이상의 사유가 해당될 때의 우선순위는 `verifyBid` 주석의 검사 순서에만 문서화되어 있고 조합 테스트 없음.
 
 ---
 
