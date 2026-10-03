@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { verifyBid } from "../src/verify.js";
 import type { CapacityAttestation } from "../src/model.js";
-import { HOUR, NOW, makeSignedEnv, signedAtt } from "./fixtures.js";
+import { HOUR, NOW, makeSignedEnv, mustPublish, signedAtt } from "./fixtures.js";
 import { TEST_DOMAIN, signAttestation, toHighS } from "./signing.js";
 
 const bid = (bidAmount: bigint, fundId = "fund_a") => ({ fundId, ipoId: "ipo_1", bidAmount });
@@ -13,7 +13,7 @@ const fail = (reasonCode: string) => ({ eligible: false, reasonCode });
 
 async function env(overrides: Partial<CapacityAttestation> = {}, signer?: string) {
   const e = makeSignedEnv();
-  e.store.publish(signer === undefined ? await signedAtt(overrides) : await signedAtt(overrides, signer));
+  mustPublish(e.store, signer === undefined ? await signedAtt(overrides) : await signedAtt(overrides, signer));
   return e;
 }
 
@@ -29,7 +29,7 @@ describe("verifyBid + EIP-712: genuine attestation", () => {
   it("an attestation with exposures in a different order verifies identically", async () => {
     const reorder = await signedAtt();
     const e = makeSignedEnv();
-    e.store.publish({ ...reorder, underlyingExposures: [...reorder.underlyingExposures].reverse() });
+    mustPublish(e.store, { ...reorder, underlyingExposures: [...reorder.underlyingExposures].reverse() });
     expect(verifyBid(bid(24_000_000_000n), e.deps)).toMatchObject({ eligible: true });
   });
 });
@@ -38,7 +38,7 @@ describe("verifyBid + EIP-712: forgery and tampering", () => {
   it("no attestation signature at all / placeholder signature -> SIGNATURE_INVALID", async () => {
     for (const signature of ["", "unverified_demo_signature"]) {
       const e = makeSignedEnv();
-      e.store.publish({ ...(await signedAtt()), signature });
+      mustPublish(e.store, { ...(await signedAtt()), signature });
       expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("SIGNATURE_INVALID"));
     }
   });
@@ -60,14 +60,14 @@ describe("verifyBid + EIP-712: forgery and tampering", () => {
 
   it("inflating grossCapacityKrw after signing cannot raise a bid's ceiling", async () => {
     const e = makeSignedEnv();
-    e.store.publish({ ...(await signedAtt()), grossCapacityKrw: 300_000_000_000n });
+    mustPublish(e.store, { ...(await signedAtt()), grossCapacityKrw: 300_000_000_000n });
     expect(verifyBid(bid(100_000_000_000n), e.deps)).toMatchObject(fail("SIGNATURE_INVALID"));
   });
 
   it("lowering a participating underlying exposure after signing -> SIGNATURE_INVALID", async () => {
     const signed = await signedAtt();
     const e = makeSignedEnv();
-    e.store.publish({
+    mustPublish(e.store, {
       ...signed,
       underlyingExposures: [
         { fundId: "fund_b", exposureKrw: 0n },
@@ -80,39 +80,39 @@ describe("verifyBid + EIP-712: forgery and tampering", () => {
   it("dropping an underlying exposure after signing reports SIGNATURE_INVALID before completeness", async () => {
     const signed = await signedAtt();
     const e = makeSignedEnv();
-    e.store.publish({ ...signed, underlyingExposures: signed.underlyingExposures.slice(1) });
+    mustPublish(e.store, { ...signed, underlyingExposures: signed.underlyingExposures.slice(1) });
     expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("SIGNATURE_INVALID"));
   });
 
   it("extending expiresAt after signing -> SIGNATURE_INVALID", async () => {
     const signed = await signedAtt({ expiresAt: NOW - 1 });
     const e = makeSignedEnv();
-    e.store.publish({ ...signed, expiresAt: NOW + HOUR });
+    mustPublish(e.store, { ...signed, expiresAt: NOW + HOUR });
     expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("SIGNATURE_INVALID"));
   });
 
   it("swapping nonce, fundId or ipoId after signing -> SIGNATURE_INVALID (fundId/ipoId stay consistent with the request)", async () => {
     const signed = await signedAtt();
     const e1 = makeSignedEnv();
-    e1.store.publish({ ...signed, nonce: "nonce_other" });
+    mustPublish(e1.store, { ...signed, nonce: "nonce_other" });
     expect(verifyBid(bid(1n), e1.deps)).toMatchObject(fail("SIGNATURE_INVALID"));
     // Re-targeting a signature made for fund_a/ipo_1 at another subject. fund_b is a registered fund.
     const e2 = makeSignedEnv();
-    e2.store.publish({ ...signed, fundId: "fund_b" });
+    mustPublish(e2.store, { ...signed, fundId: "fund_b" });
     expect(verifyBid({ fundId: "fund_b", ipoId: "ipo_1", bidAmount: 1n }, e2.deps)).toMatchObject(fail("SIGNATURE_INVALID"));
   });
 
   it("malleated (high-s) copy of a valid signature -> SIGNATURE_INVALID", async () => {
     const signed = await signedAtt();
     const e = makeSignedEnv();
-    e.store.publish({ ...signed, signature: toHighS(signed.signature) });
+    mustPublish(e.store, { ...signed, signature: toHighS(signed.signature) });
     expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("SIGNATURE_INVALID"));
   });
 
   it("an attestation signed for another chain or verifying contract cannot be reused", async () => {
     for (const change of [{ chainId: 1n }, { verifyingContract: "0x00000000000000000000000000000000000b0b01" }]) {
       const e = makeSignedEnv();
-      e.store.publish(await signAttestation((await signedAtt()), "attester_1", { ...TEST_DOMAIN, ...change }));
+      mustPublish(e.store, await signAttestation((await signedAtt()), "attester_1", { ...TEST_DOMAIN, ...change }));
       expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("SIGNATURE_INVALID"));
     }
   });
@@ -146,7 +146,7 @@ describe("verifyBid + EIP-712: validly signed attestations are still subject to 
   it("nonce replay: a second, correctly signed attestation id reusing the nonce -> ATTESTATION_NONCE_REPLAY", async () => {
     const { deps, store } = await env(); // att_1 binds attester_1/nonce_1
     const replay = await signedAtt({ attestationId: "att_replay", nonce: "nonce_1" });
-    expect(store.publish({ ...replay, fundId: "fund_z" })).toBe(false); // the store refuses to bind it
+    expect(store.publish({ ...replay, fundId: "fund_z" })).toEqual({ ok: false, reasonCode: "NONCE_ALREADY_BOUND" }); // the store refuses to bind it
     const r = verifyBid(bid(1n), { ...deps, attestations: { getAttestation: () => replay } });
     expect(r).toMatchObject(fail("ATTESTATION_NONCE_REPLAY"));
   });
@@ -162,6 +162,31 @@ describe("verifyBid + EIP-712: validly signed attestations are still subject to 
     const { deps } = await env();
     expect(verifyBid(bid(1n), deps).eligible).toBe(true);
     expect(verifyBid(bid(2n), deps).eligible).toBe(true);
+  });
+});
+
+describe("verifyBid + EIP-712: validity-window boundaries (signed attestations)", () => {
+  it("is valid at expiresAt - 1 ms and expired at exactly expiresAt", async () => {
+    const { deps, clock } = await env();
+    clock.t = NOW + HOUR - 1;
+    expect(verifyBid(bid(1n), deps).eligible).toBe(true);
+    clock.t = NOW + HOUR;
+    expect(verifyBid(bid(1n), deps)).toMatchObject(fail("ATTESTATION_EXPIRED"));
+  });
+
+  it("is valid at exactly issuedAt and not yet valid 1 ms before", async () => {
+    const { deps, clock } = await env();
+    clock.t = NOW - HOUR;
+    expect(verifyBid(bid(1n), deps).eligible).toBe(true);
+    clock.t = NOW - HOUR - 1;
+    expect(verifyBid(bid(1n), deps)).toMatchObject(fail("ATTESTATION_NOT_YET_VALID"));
+  });
+
+  it("is valid when age is exactly the 24h limit and stale 1 ms later", async () => {
+    const { deps, clock } = await env({ issuedAt: NOW - 24 * HOUR, expiresAt: NOW + 2 * HOUR });
+    expect(verifyBid(bid(1n), deps).eligible).toBe(true); // age == 24h
+    clock.t = NOW + 1;
+    expect(verifyBid(bid(1n), deps)).toMatchObject(fail("ATTESTATION_STALE")); // age == 24h + 1 ms
   });
 });
 
@@ -208,13 +233,13 @@ describe("verifyBid + EIP-712: a valid signature does not bypass the remaining c
 
   it("malformed attestation (negative exposure) is rejected before signature handling -> ATTESTATION_MALFORMED", async () => {
     const e = makeSignedEnv();
-    e.store.publish({ ...(await signedAtt()), underlyingExposures: [{ fundId: "fund_b", exposureKrw: -1n }] });
+    mustPublish(e.store, { ...(await signedAtt()), underlyingExposures: [{ fundId: "fund_b", exposureKrw: -1n }] });
     expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("ATTESTATION_MALFORMED"));
   });
 
   it("UNKNOWN underlying participation is still rejected (never exempt, never assumed)", async () => {
     const e = makeSignedEnv({ recordStates: false }); // fund_b and fund_c are both UNKNOWN
-    e.store.publish(await signedAtt());
+    mustPublish(e.store, await signedAtt());
     expect(verifyBid(bid(1n), e.deps)).toMatchObject(fail("UNDERLYING_PARTICIPATION_UNKNOWN"));
     e.ledger.requestParticipation("fund_b", "ipo_1");
     e.ledger.requestNonParticipationLock("fund_c", "ipo_1");

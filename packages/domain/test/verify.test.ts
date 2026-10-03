@@ -154,7 +154,7 @@ describe("verifyBid: attestation integrity checks", () => {
     const { deps, store } = makeEnv();
     const original = att({ attestationId: "att_orig", fundId: "fund_z", nonce: "nonce_1" });
     // nonce_1 was already bound to att_1 by makeEnv; a different attestation reusing it is a replay.
-    expect(store.publish(original)).toBe(false);
+    expect(store.publish(original)).toEqual({ ok: false, reasonCode: "NONCE_ALREADY_BOUND" });
     const replay = att({ attestationId: "att_replay", nonce: "nonce_1" });
     const r = verifyBid(bid(1n), { ...deps, attestations: { getAttestation: () => replay } });
     expect(r).toMatchObject({ eligible: false, reasonCode: "ATTESTATION_NONCE_REPLAY" });

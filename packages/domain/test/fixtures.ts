@@ -1,5 +1,6 @@
 import type { CapacityAttestation } from "../src/model.js";
 import { AllowlistAttestationVerifier, InMemoryAttestationStore } from "../src/attestation.js";
+import type { AttestationVerifier } from "../src/attestation.js";
 import { InMemoryParticipationLedger } from "../src/participation.js";
 import { InMemoryFundRegistry, InMemoryIpoRegistry } from "../src/registry.js";
 import { DEMO_RULE_V1 } from "../src/rules.js";
@@ -32,6 +33,20 @@ export function att(overrides: Partial<CapacityAttestation> = {}): CapacityAttes
 }
 
 
+/**
+ * TEST-ONLY verifier that accepts everything. Fixture stores use it by default so that tests can
+ * put arbitrary (unsigned, tampered, unauthorized) attestations in front of `verifyBid` and prove
+ * that `verifyBid` itself re-verifies whatever it reads (defence in depth). The publish gate with
+ * a real verifier is tested separately (`store-publish.test.ts`, option `strictStore`).
+ */
+export const PERMISSIVE_VERIFIER: AttestationVerifier = { verify: () => ({ ok: true }) };
+
+/** Publishes and fails the test loudly if the store refuses, so a rejected publish can never go unnoticed. */
+export function mustPublish(store: InMemoryAttestationStore, attestation: CapacityAttestation): void {
+  const r = store.publish(attestation);
+  if (!r.ok) throw new Error(`fixture publish rejected: ${r.reasonCode}`);
+}
+
 export interface Env {
   readonly deps: VerifyBidDeps;
   readonly ledger: InMemoryParticipationLedger;
@@ -45,15 +60,17 @@ export interface Env {
  *  - fund_b is PARTICIPATING in ipo_1, fund_c is NON_PARTICIPATION_LOCKED in ipo_1.
  *  - one valid attestation for fund_a / ipo_1 is published.
  */
-export function makeEnv(opts: { attestation?: CapacityAttestation | null; recordStates?: boolean } = {}): Env {
+export function makeEnv(
+  opts: { attestation?: CapacityAttestation | null; recordStates?: boolean; storeVerifier?: AttestationVerifier } = {},
+): Env {
   const clock = { t: NOW, now: () => clock.t };
   const ledger = new InMemoryParticipationLedger(() => clock.t);
   if (opts.recordStates !== false) {
     ledger.requestParticipation("fund_b", "ipo_1");
     ledger.requestNonParticipationLock("fund_c", "ipo_1");
   }
-  const store = new InMemoryAttestationStore();
-  if (opts.attestation !== null) store.publish(opts.attestation ?? att());
+  const store = new InMemoryAttestationStore(opts.storeVerifier ?? PERMISSIVE_VERIFIER);
+  if (opts.attestation !== null) mustPublish(store, opts.attestation ?? att());
   const deps: VerifyBidDeps = {
     clock,
     activeRuleVersion: DEMO_RULE_V1,
@@ -98,7 +115,14 @@ export async function signedAtt(
 }
 
 /** Same demo world as `makeEnv`, but attestations are checked by the EIP-712 verifier. */
-export function makeSignedEnv(opts: { attestation?: CapacityAttestation | null; recordStates?: boolean } = {}): Env {
-  const env = makeEnv({ ...opts, attestation: opts.attestation ?? null });
-  return { ...env, deps: { ...env.deps, attesterVerifier: makeEip712Verifier() } };
+export function makeSignedEnv(
+  opts: { attestation?: CapacityAttestation | null; recordStates?: boolean; strictStore?: boolean } = {},
+): Env {
+  const verifier = makeEip712Verifier();
+  const env = makeEnv({
+    recordStates: opts.recordStates ?? true,
+    attestation: opts.attestation ?? null,
+    storeVerifier: opts.strictStore === true ? verifier : PERMISSIVE_VERIFIER,
+  });
+  return { ...env, deps: { ...env.deps, attesterVerifier: verifier } };
 }
