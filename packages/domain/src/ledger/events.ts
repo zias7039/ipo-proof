@@ -11,8 +11,9 @@
  *    AuthorizedLedger (authorized.ts), which is the write entry point for untrusted callers.
  *    HashChainedLedger itself stays low-level and unauthenticated: it is NOT exported from the
  *    package barrel (ledger/index.ts); only AuthorizedLedger is. The parse functions and
- *    verifyChain here are read-only format/chain checks: they authenticate nobody. Still missing: R9 (key revocation), R15 (bid withdrawal, needs a bid store), BIND-1
- *    origins, a registry change log, a persistent nonce store, external checkpoints.
+ *    verifyChain here are read-only format/chain checks: they authenticate nobody. Still missing:
+ *    R15 (bid withdrawal, needs a bid store), BIND-1 origins, a registry change log, key
+ *    registration / rotation (#13), a persistent nonce store, checkpoint issuing.
  *  - Events carry no amounts and no capacity (principle E). The payload of every event type is a
  *    closed allowlist: any extra field (for example an amount) makes the event malformed.
  */
@@ -56,18 +57,20 @@ export const LedgerEventType = {
   NON_PARTICIPATION_LOCKED_RECORDED: "NON_PARTICIPATION_LOCKED_RECORDED",
   EVENT_ANNULLED: "EVENT_ANNULLED",
   IPO_CLOSED: "IPO_CLOSED",
-  // Named in the design but NOT supported yet (rejected, fail closed): later steps own them.
   IPO_FINALIZED: "IPO_FINALIZED",
   FINDING_ANNOTATED: "FINDING_ANNOTATED",
   MANAGER_KEY_REVOKED: "MANAGER_KEY_REVOKED",
 } as const;
 export type LedgerEventType = (typeof LedgerEventType)[keyof typeof LedgerEventType];
 
-export type SupportedLedgerEventType =
-  | typeof LedgerEventType.PARTICIPATION_RECORDED
-  | typeof LedgerEventType.NON_PARTICIPATION_LOCKED_RECORDED
-  | typeof LedgerEventType.EVENT_ANNULLED
-  | typeof LedgerEventType.IPO_CLOSED;
+/** Closed list of annotation kinds (design #38 section 2.3.1). Extending it needs a `schemaVersion` bump. */
+export const FindingKind = {
+  ATTESTATION_REVOKED_AFTER_CLOSE: "ATTESTATION_REVOKED_AFTER_CLOSE",
+  DISPUTE_RAISED: "DISPUTE_RAISED",
+  RECORD_ERROR_NOTED: "RECORD_ERROR_NOTED",
+  KEY_COMPROMISE_NOTED: "KEY_COMPROMISE_NOTED",
+} as const;
+export type FindingKind = (typeof FindingKind)[keyof typeof FindingKind];
 
 export const ParticipationOrigin = { INDEPENDENT: "INDEPENDENT", BIND_1: "BIND_1" } as const;
 export type ParticipationOrigin = (typeof ParticipationOrigin)[keyof typeof ParticipationOrigin];
@@ -120,6 +123,28 @@ export interface IpoClosedPayload {
   readonly ledgerSeqAtClose: number;
 }
 
+/** `FINDING_ANNOTATED` (R17): an operator note on an earlier event of the same IPO. No free text, no amounts. */
+export interface FindingAnnotatedPayload {
+  /** Position of the annotated event; must be smaller than this event's seq. */
+  readonly targetSeq: number;
+  readonly targetEventHash: string;
+  readonly kind: FindingKind;
+  /** Hash of a document kept outside the ledger, or null. */
+  readonly evidenceDigest: string | null;
+}
+/** `IPO_FINALIZED` (R19): pins the cut-off and the digest of the finalization result. The ledger does not check what the digest means. */
+export interface IpoFinalizedPayload {
+  readonly ledgerSeqAtClose: number;
+  /** `eventHash` of the event at `ledgerSeqAtClose` (= `prevHash` of IPO_CLOSED; the genesis hash for 0). */
+  readonly ledgerHeadHashAtClose: string;
+  readonly finalizationDigest: string;
+}
+/** `MANAGER_KEY_REVOKED` (R18): global event, `ipoId = null`. */
+export interface ManagerKeyRevokedPayload {
+  readonly managerId: string;
+  readonly revokedKeyId: string;
+}
+
 interface EnvelopeCommon {
   readonly ipoId: IpoId;
   readonly actorId: string;
@@ -134,7 +159,11 @@ export type LedgerEventBody =
   | (EnvelopeCommon & { readonly eventType: "PARTICIPATION_RECORDED"; readonly subjectFundId: FundId; readonly payload: ParticipationRecordedPayload })
   | (EnvelopeCommon & { readonly eventType: "NON_PARTICIPATION_LOCKED_RECORDED"; readonly subjectFundId: FundId; readonly payload: NonParticipationLockedRecordedPayload })
   | (EnvelopeCommon & { readonly eventType: "EVENT_ANNULLED"; readonly subjectFundId: FundId; readonly payload: EventAnnulledPayload })
-  | (EnvelopeCommon & { readonly eventType: "IPO_CLOSED"; readonly subjectFundId: null; readonly payload: IpoClosedPayload });
+  | (EnvelopeCommon & { readonly eventType: "IPO_CLOSED"; readonly subjectFundId: null; readonly payload: IpoClosedPayload })
+  | (EnvelopeCommon & { readonly eventType: "IPO_FINALIZED"; readonly subjectFundId: null; readonly payload: IpoFinalizedPayload })
+  | (EnvelopeCommon & { readonly eventType: "FINDING_ANNOTATED"; readonly subjectFundId: null; readonly payload: FindingAnnotatedPayload })
+  // The only event without an IPO: a key belongs to the manager, not to an IPO (design #38 section 2.3.2).
+  | (Omit<EnvelopeCommon, "ipoId"> & { readonly eventType: "MANAGER_KEY_REVOKED"; readonly ipoId: null; readonly subjectFundId: null; readonly payload: ManagerKeyRevokedPayload });
 
 /** What a caller proposes. The ledger assigns seq, prevHash, recordedAt, schemaVersion and eventHash. */
 export type LedgerEventDraft = LedgerEventBody;
@@ -165,8 +194,6 @@ export function computeEventHash(event: LedgerEventUnhashed): string {
 export const ParseRejection = {
   /** Wrong shape, extra/missing field, bad id/hash/signature format, or inconsistent combination. */
   EVENT_MALFORMED: "EVENT_MALFORMED",
-  /** A known name from the design whose handling is not implemented yet. Rejected, fail closed. */
-  EVENT_TYPE_NOT_SUPPORTED: "EVENT_TYPE_NOT_SUPPORTED",
 } as const;
 export type ParseRejection = (typeof ParseRejection)[keyof typeof ParseRejection];
 
@@ -279,6 +306,24 @@ function closedPayload(v: unknown): IpoClosedPayload {
   return Object.freeze({ closesAt: uint(r["closesAt"]), ledgerSeqAtClose: uint(r["ledgerSeqAtClose"]) });
 }
 
+const FINDING_KINDS = Object.values(FindingKind);
+
+function findingPayload(v: unknown): FindingAnnotatedPayload {
+  const r = record(v, ["targetSeq", "targetEventHash", "kind", "evidenceDigest"]);
+  const evidenceDigest = r["evidenceDigest"] === null ? null : hex64(r["evidenceDigest"]);
+  return Object.freeze({ targetSeq: uint(r["targetSeq"], 1), targetEventHash: hex64(r["targetEventHash"]), kind: oneOf(r["kind"], FINDING_KINDS), evidenceDigest });
+}
+
+function finalizedPayload(v: unknown): IpoFinalizedPayload {
+  const r = record(v, ["ledgerSeqAtClose", "ledgerHeadHashAtClose", "finalizationDigest"]);
+  return Object.freeze({ ledgerSeqAtClose: uint(r["ledgerSeqAtClose"]), ledgerHeadHashAtClose: hex64(r["ledgerHeadHashAtClose"]), finalizationDigest: hex64(r["finalizationDigest"]) });
+}
+
+function revokedPayload(v: unknown): ManagerKeyRevokedPayload {
+  const r = record(v, ["managerId", "revokedKeyId"]);
+  return Object.freeze({ managerId: id(r["managerId"]), revokedKeyId: id(r["revokedKeyId"]) });
+}
+
 const BODY_KEYS = ["eventType", "ipoId", "subjectFundId", "actorId", "authorization", "coAuthorizations", "payload", "registrySeq", "requestedAt"];
 const CHAIN_KEYS = ["schemaVersion", "seq", "prevHash", "recordedAt"];
 
@@ -287,7 +332,6 @@ function bodyOf(r: Record<string, unknown>, allowMissingApproval = false): Ledge
   if (typeof eventType !== "string") return bad();
   if (!Object.hasOwn(LedgerEventType, eventType)) return bad();
   const common = {
-    ipoId: id(r["ipoId"]),
     actorId: id(r["actorId"]),
     authorization: authorization(r["authorization"]),
     coAuthorizations: Object.freeze(array(r["coAuthorizations"]).map(coAuthorization)),
@@ -295,37 +339,50 @@ function bodyOf(r: Record<string, unknown>, allowMissingApproval = false): Ledge
     requestedAt: uint(r["requestedAt"]),
   };
   const noCoSigners = () => (common.coAuthorizations.length === 0 ? undefined : bad());
+  if (eventType === LedgerEventType.MANAGER_KEY_REVOKED) {
+    // The one global event (design #38 section 2.3.2): ipoId and subjectFundId must be null.
+    noCoSigners();
+    if (r["ipoId"] !== null || r["subjectFundId"] !== null) return bad();
+    return { ...common, eventType, ipoId: null, subjectFundId: null, payload: revokedPayload(r["payload"]) };
+  }
+  // Every other type must name an IPO (null is malformed).
+  const withIpo = { ...common, ipoId: id(r["ipoId"]) };
   switch (eventType) {
     case LedgerEventType.PARTICIPATION_RECORDED:
       noCoSigners();
-      return { ...common, eventType, subjectFundId: id(r["subjectFundId"]), payload: participationPayload(r["payload"]) };
+      return { ...withIpo, eventType, subjectFundId: id(r["subjectFundId"]), payload: participationPayload(r["payload"]) };
     case LedgerEventType.NON_PARTICIPATION_LOCKED_RECORDED:
       noCoSigners();
-      return { ...common, eventType, subjectFundId: id(r["subjectFundId"]), payload: lockedPayload(r["payload"]) };
+      return { ...withIpo, eventType, subjectFundId: id(r["subjectFundId"]), payload: lockedPayload(r["payload"]) };
     case LedgerEventType.EVENT_ANNULLED: {
       const payload = annulledPayload(r["payload"]);
       // R10 / R15 shape: a correction needs exactly one approver co-signature; a bid withdrawal needs none.
       const expected = payload.reason === AnnulmentReason.BID_WITHDRAWN ? 0 : 1;
       const missingAllowed = allowMissingApproval && expected === 1 && common.coAuthorizations.length === 0;
       if (common.coAuthorizations.length !== expected && !missingAllowed) return bad();
-      return { ...common, eventType, subjectFundId: id(r["subjectFundId"]), payload };
+      return { ...withIpo, eventType, subjectFundId: id(r["subjectFundId"]), payload };
     }
     case LedgerEventType.IPO_CLOSED:
       noCoSigners();
       if (r["subjectFundId"] !== null) return bad();
-      return { ...common, eventType, subjectFundId: null, payload: closedPayload(r["payload"]) };
+      return { ...withIpo, eventType, subjectFundId: null, payload: closedPayload(r["payload"]) };
+    case LedgerEventType.IPO_FINALIZED:
+      noCoSigners();
+      if (r["subjectFundId"] !== null) return bad();
+      return { ...withIpo, eventType, subjectFundId: null, payload: finalizedPayload(r["payload"]) };
+    case LedgerEventType.FINDING_ANNOTATED:
+      noCoSigners();
+      if (r["subjectFundId"] !== null) return bad();
+      return { ...withIpo, eventType, subjectFundId: null, payload: findingPayload(r["payload"]) };
     default:
-      // Known name, handling not implemented yet. Shape is not examined further.
-      throw new NotSupported();
+      return bad(); // unreachable: eventType was checked against the closed list above
   }
 }
-class NotSupported extends Error {}
 
 function parseWith<T>(fn: () => T): ParseResult<T> {
   try {
     return { ok: true, value: fn() };
   } catch (e) {
-    if (e instanceof NotSupported) return { ok: false, reasonCode: ParseRejection.EVENT_TYPE_NOT_SUPPORTED };
     if (e instanceof Malformed) return MALFORMED;
     return MALFORMED; // any other surprise (e.g. a throwing Proxy trap) is also a rejection, never a pass
   }

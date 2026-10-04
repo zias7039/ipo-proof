@@ -105,11 +105,8 @@ describe("strict parsing (fail closed)", () => {
     expect(draftOk({ ...participate(), subjectFundId: null })).toBe(false);
   });
 
-  it("known-but-unsupported event types are rejected with their own reason, unknown names are malformed (fail closed)", () => {
-    for (const t of ["IPO_FINALIZED", "FINDING_ANNOTATED", "MANAGER_KEY_REVOKED"]) {
-      expect(parseLedgerEventDraft({ ...close(0), eventType: t })).toEqual({ ok: false, reasonCode: "EVENT_TYPE_NOT_SUPPORTED" });
-      expect(newLedger().ledger.append({ ...close(0), eventType: t })).toEqual({ ok: false, reasonCode: "EVENT_TYPE_NOT_SUPPORTED" });
-    }
+  it("an event type outside the closed list is malformed (fail closed); the former \"unsupported\" names are real types now", () => {
+    expect(parseLedgerEventDraft({ ...close(0), eventType: "IPO_FINALIZED" })).toEqual(malformed); // wrong payload for that type
     for (const t of ["ALLOW_ALL", "", "constructor", "__proto__", "toString"]) expect(parseLedgerEventDraft({ ...close(0), eventType: t }), t).toEqual(malformed);
   });
 

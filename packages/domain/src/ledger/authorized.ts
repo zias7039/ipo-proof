@@ -17,6 +17,10 @@
  *        closing time, once per IPO (the "once" part lives in the ledger fold)
  *  - R6b recording / correcting is refused with IPO_WINDOW_ELAPSED once the sequencer clock reached
  *        the IPO's closing time (no grace); only IPO_CLOSED is exempt
+ *  - R9/R18 MANAGER_KEY_REVOKED: only a registry admin (KeyRevocation) for a registered manager key,
+ *        once; from then on no new request signed with that key is accepted (LEDGER_SIGNATURE_INVALID)
+ *  - R17 FINDING_ANNOTATED / R19 IPO_FINALIZED: operator only (OperatorAction bound to the payload);
+ *        target, cut-off and once-only conditions are enforced by the ledger fold
  *  - R10 a correction needs the fund manager's LedgerAnnulment AND an AnnulmentApproval from a
  *        registry admin over the same digest
  *  - R14 the approver must be independent of the manager and of the operator (I1-I4); if the
@@ -24,7 +28,8 @@
  *  - R6, R7, R11-R13 are enforced by the ledger fold (derive.ts) that this class delegates to
  *
  * NOT implemented here (and therefore not available through this class):
- *  - R9 key revocation / MANAGER_KEY_REVOKED, key rotation, quorum approval (#13)
+ *  - key registration / rotation after a revocation and quorum approval (#13): a revoked manager key
+ *    stays revoked and nothing here can install a replacement
  *  - R15 bid withdrawal: it needs the bid store (BID_NOT_FOUND, BID_ALREADY_WITHDRAWN, "last active
  *    bid"). BID_WITHDRAWN corrections are rejected, fail closed.
  *  - BIND-1 (`origin = BIND_1`) records: they come from bid intake and the signature does not cover
@@ -57,7 +62,6 @@ import type { AppendResult } from "./chain.js";
 import {
   AnnulmentReason,
   LedgerEventType,
-  ParseRejection,
   ParticipationOrigin,
   parseLedgerEventDraft,
 } from "./events.js";
@@ -72,11 +76,12 @@ import {
   LEDGER_DOMAIN_NAME,
   LEDGER_DOMAIN_VERSION,
   LedgerScheme,
-  OPERATOR_ACTION_IPO_CLOSED,
+  OperatorActionName,
   digestToHex,
   hashAnnulmentApproval,
   hashLedgerAction,
   hashLedgerAnnulment,
+  hashKeyRevocation,
   hashOperatorAction,
   ledgerDigest,
   ledgerDomainSeparator,
@@ -97,6 +102,8 @@ export const AuthRejection = {
   FUND_NOT_REGISTERED: "FUND_NOT_REGISTERED",
   IPO_NOT_FOUND: "IPO_NOT_FOUND",
   LEDGER_OPERATOR_REQUIRED: "LEDGER_OPERATOR_REQUIRED",
+  /** R18: MANAGER_KEY_REVOKED must be signed by a registry administrator. */
+  LEDGER_REGISTRY_ADMIN_REQUIRED: "LEDGER_REGISTRY_ADMIN_REQUIRED",
   IPO_NOT_YET_CLOSABLE: "IPO_NOT_YET_CLOSABLE",
   /** R6b (M-2): the sequencer clock reached the IPO's closing time; no state event is accepted any more, `IPO_CLOSED` or not. */
   IPO_WINDOW_ELAPSED: "IPO_WINDOW_ELAPSED",
@@ -233,7 +240,7 @@ export class AuthorizedLedger implements ParticipationLookup {
   private submitUnchecked(request: unknown): SubmitResult {
     // 0. Shape. A correction may lack its approver here so that we can answer COSIGN_REQUIRED later.
     const parsed = parseLedgerEventDraft(request, { allowMissingApproval: true });
-    if (!parsed.ok) return fail(parsed.reasonCode === ParseRejection.EVENT_TYPE_NOT_SUPPORTED ? AuthRejection.EVENT_TYPE_NOT_SUPPORTED : AuthRejection.EVENT_MALFORMED);
+    if (!parsed.ok) return fail(AuthRejection.EVENT_MALFORMED);
     const draft = parsed.value;
 
     if (draft.eventType === LedgerEventType.EVENT_ANNULLED && draft.payload.reason === AnnulmentReason.BID_WITHDRAWN) {
@@ -303,6 +310,22 @@ export class AuthorizedLedger implements ParticipationLookup {
         if (ipo === undefined) return no(AuthRejection.IPO_NOT_FOUND);
         if (draft.payload.closesAt !== ipo.subscriptionClosesAt) return no(AuthRejection.LEDGER_CLOSE_TIME_MISMATCH);
         if (now < ipo.subscriptionClosesAt) return no(AuthRejection.IPO_NOT_YET_CLOSABLE);
+        break;
+      }
+      case LedgerEventType.IPO_FINALIZED:
+      case LedgerEventType.FINDING_ANNOTATED: {
+        // R17 / R19: operator only, for a registered IPO. Target / cut-off / once-only conditions are the fold's.
+        if (actor.role !== PrincipalRole.LEDGER_OPERATOR) return no(AuthRejection.LEDGER_OPERATOR_REQUIRED);
+        if (this.#config.ipos.getIpo(draft.ipoId) === undefined) return no(AuthRejection.IPO_NOT_FOUND);
+        break;
+      }
+      case LedgerEventType.MANAGER_KEY_REVOKED: {
+        // R18: a registry admin revokes the registered key of a registered fund manager (never an operator or admin key).
+        if (actor.role !== PrincipalRole.REGISTRY_ADMIN) return no(AuthRejection.LEDGER_REGISTRY_ADMIN_REQUIRED);
+        const manager = this.#config.principals.get(draft.payload.managerId);
+        if (manager === undefined || manager.role !== PrincipalRole.FUND_MANAGER || manager.keyId !== draft.payload.revokedKeyId) {
+          return no(AuthRejection.LEDGER_ACTOR_UNKNOWN);
+        }
         break;
       }
       case LedgerEventType.PARTICIPATION_RECORDED:
@@ -381,9 +404,32 @@ export class AuthorizedLedger implements ParticipationLookup {
           if (authorization.scheme !== LedgerScheme.OPERATOR_ACTION) return { ok: false, reasonCode: AuthRejection.LEDGER_SCHEME_MISMATCH };
           structHash = hashOperatorAction({
             actorId: draft.actorId,
-            action: OPERATOR_ACTION_IPO_CLOSED,
+            action: OperatorActionName.IPO_CLOSED,
             ipoId: draft.ipoId,
-            payloadDigest: operatorPayloadDigest({ closesAt: draft.payload.closesAt }),
+            payloadDigest: operatorPayloadDigest({ closesAt: draft.payload.closesAt }), // ledgerSeqAtClose is filled by the sequencer
+            requestNonce: authorization.requestNonce,
+            expiresAt: authorization.expiresAt,
+          });
+          break;
+        case LedgerEventType.IPO_FINALIZED:
+        case LedgerEventType.FINDING_ANNOTATED:
+          if (authorization.scheme !== LedgerScheme.OPERATOR_ACTION) return { ok: false, reasonCode: AuthRejection.LEDGER_SCHEME_MISMATCH };
+          structHash = hashOperatorAction({
+            actorId: draft.actorId,
+            action: draft.eventType === LedgerEventType.IPO_FINALIZED ? OperatorActionName.IPO_FINALIZED : OperatorActionName.FINDING_ANNOTATED,
+            ipoId: draft.ipoId,
+            // the whole payload is signed, so a signature cannot be reused with another digest / kind / target
+            payloadDigest: operatorPayloadDigest({ ...draft.payload }),
+            requestNonce: authorization.requestNonce,
+            expiresAt: authorization.expiresAt,
+          });
+          break;
+        case LedgerEventType.MANAGER_KEY_REVOKED:
+          if (authorization.scheme !== LedgerScheme.KEY_REVOCATION) return { ok: false, reasonCode: AuthRejection.LEDGER_SCHEME_MISMATCH };
+          structHash = hashKeyRevocation({
+            actorId: draft.actorId,
+            managerId: draft.payload.managerId,
+            revokedKeyId: draft.payload.revokedKeyId,
             requestNonce: authorization.requestNonce,
             expiresAt: authorization.expiresAt,
           });
@@ -396,6 +442,11 @@ export class AuthorizedLedger implements ParticipationLookup {
     const digest = ledgerDigest(this.#domainSeparator, structHash);
     const recovered = recoverAttestationSigner(digest, authorization.signature);
     if (recovered === undefined || recovered !== actor.address) return { ok: false, reasonCode: AuthRejection.LEDGER_SIGNATURE_INVALID };
+    // R9: once MANAGER_KEY_REVOKED is in the log, nothing signed with that key is accepted any more
+    // (also not a resend of an earlier request: a revoked key is not trusted for anything new).
+    if (actor.role === PrincipalRole.FUND_MANAGER && this.#ledger.isKeyRevoked(actor.principalId, actor.keyId)) {
+      return { ok: false, reasonCode: AuthRejection.LEDGER_SIGNATURE_INVALID };
+    }
     return { ok: true, actor, digest, recoveredActor: recovered };
   }
 
@@ -482,6 +533,13 @@ export class AuthorizedLedger implements ParticipationLookup {
   }
   isClosed(ipoId: IpoId): boolean {
     return this.#ledger.isClosed(ipoId);
+  }
+  isFinalized(ipoId: IpoId): boolean {
+    return this.#ledger.isFinalized(ipoId);
+  }
+  /** True once a MANAGER_KEY_REVOKED event for this manager and key id is in the log. */
+  isKeyRevoked(managerId: string, keyId: string): boolean {
+    return this.#ledger.isKeyRevoked(managerId, keyId);
   }
   cutoffSeq(ipoId: IpoId): number | undefined {
     return this.#ledger.cutoffSeq(ipoId);

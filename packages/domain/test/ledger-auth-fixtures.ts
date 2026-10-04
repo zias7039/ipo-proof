@@ -277,6 +277,91 @@ export async function closeDraft(o: { actor?: string; signer?: string; ipo?: str
   };
 }
 
+export interface OperatorEventOpts {
+  actor?: string;
+  signer?: string;
+  ipo?: string;
+  nonce?: string;
+  expiresAt?: number;
+  /** Payload values that are signed but NOT sent (tampering after signing). */
+  signedPayload?: Record<string, unknown>;
+  signedAction?: string;
+  scheme?: string;
+  extra?: Record<string, unknown>;
+}
+
+async function operatorEvent(eventType: "IPO_FINALIZED" | "FINDING_ANNOTATED", payload: Record<string, unknown>, o: OperatorEventOpts): Promise<Record<string, unknown>> {
+  const actor = o.actor ?? "operator_1";
+  const ipo = o.ipo ?? "ipo_1";
+  const nonce = o.nonce ?? fresh(eventType.toLowerCase());
+  const expiresAt = o.expiresAt ?? FAR;
+  const signature = await signTyped(o.signer ?? actor, "OperatorAction", {
+    actorId: actor,
+    action: o.signedAction ?? eventType,
+    ipoId: ipo,
+    payloadDigest: operatorPayloadDigest(o.signedPayload ?? payload),
+    requestNonce: nonce,
+    expiresAt: big(expiresAt),
+  });
+  return {
+    eventType,
+    ipoId: ipo,
+    subjectFundId: null,
+    actorId: actor,
+    authorization: { scheme: o.scheme ?? LedgerScheme.OPERATOR_ACTION, requestNonce: nonce, expiresAt, signature },
+    coAuthorizations: [],
+    payload,
+    registrySeq: 1,
+    requestedAt: NOW,
+    ...o.extra,
+  };
+}
+
+/** IPO_FINALIZED: `cutoff` is the IPO_CLOSED event it must match (its payload.ledgerSeqAtClose and prevHash). */
+export function finalizeDraft(cutoff: { ledgerSeqAtClose: number; ledgerHeadHashAtClose: string }, o: OperatorEventOpts & { digest?: string } = {}): Promise<Record<string, unknown>> {
+  return operatorEvent("IPO_FINALIZED", { ledgerSeqAtClose: cutoff.ledgerSeqAtClose, ledgerHeadHashAtClose: cutoff.ledgerHeadHashAtClose, finalizationDigest: o.digest ?? "d".repeat(64) }, o);
+}
+
+export function findingDraft(
+  target: { seq: number; eventHash: string },
+  o: OperatorEventOpts & { kind?: string; evidenceDigest?: string | null } = {},
+): Promise<Record<string, unknown>> {
+  return operatorEvent(
+    "FINDING_ANNOTATED",
+    { targetSeq: target.seq, targetEventHash: target.eventHash, kind: o.kind ?? "RECORD_ERROR_NOTED", evidenceDigest: o.evidenceDigest === undefined ? "e".repeat(64) : o.evidenceDigest },
+    o,
+  );
+}
+
+export async function revokeDraft(
+  o: { actor?: string; signer?: string; managerId?: string; keyId?: string; nonce?: string; expiresAt?: number; signed?: Partial<{ managerId: string; revokedKeyId: string; actorId: string }>; scheme?: string; extra?: Record<string, unknown> } = {},
+): Promise<Record<string, unknown>> {
+  const actor = o.actor ?? "admin_1";
+  const managerId = o.managerId ?? "manager_x";
+  const keyId = o.keyId ?? managerId;
+  const nonce = o.nonce ?? fresh("revoke");
+  const expiresAt = o.expiresAt ?? FAR;
+  const signature = await signTyped(o.signer ?? actor, "KeyRevocation", {
+    actorId: o.signed?.actorId ?? actor,
+    managerId: o.signed?.managerId ?? managerId,
+    revokedKeyId: o.signed?.revokedKeyId ?? keyId,
+    requestNonce: nonce,
+    expiresAt: big(expiresAt),
+  });
+  return {
+    eventType: "MANAGER_KEY_REVOKED",
+    ipoId: null,
+    subjectFundId: null,
+    actorId: actor,
+    authorization: { scheme: o.scheme ?? LedgerScheme.KEY_REVOCATION, requestNonce: nonce, expiresAt, signature },
+    coAuthorizations: [],
+    payload: { managerId, revokedKeyId: keyId },
+    registrySeq: 1,
+    requestedAt: NOW,
+    ...o.extra,
+  };
+}
+
 /** Appends via the gate or fails the test loudly. */
 export function mustSubmit(ledger: AuthorizedLedger, request: unknown): LedgerEvent[] {
   const r = ledger.submit(request);
