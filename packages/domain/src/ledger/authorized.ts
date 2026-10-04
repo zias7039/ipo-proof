@@ -32,6 +32,16 @@
  *  - registry change log and REGISTRY_FROZEN_DURING_WINDOW (§4.3), persistence, rate limits
  *    (Q14-N2), IPO_CLOSED delay handling beyond the R6b cutoff (Q14-N3), checkpoints and intake receipts (§2.5).
  *
+ * Known trade-offs:
+ *  - A relay that holds someone's signed request can submit it at a bad moment; once authenticated
+ *    its nonce is consumed whatever the domain result (M-1), so that signature is then unusable and
+ *    the signer must sign a new request with a new nonce (availability only, QA N-3).
+ *  - The sequencer clock is a trusted component, but a clock that goes back is refused
+ *    (LEDGER_CLOCK_REGRESSION, N-4) instead of re-opening an elapsed window. The high-water mark is
+ *    in memory, like the nonce table.
+ *  - Every method other than the documented public ones is an ES `#private` method (N-1): the
+ *    prototype carries `submit` and the read accessors only.
+ *
  * What the checks establish: who asked (provenance of the request) and that the request fits the
  * registered roles. They do NOT establish that the recorded fact is true (principle B), they are
  * not zero-knowledge (principle F), and independence is only as good as the registered ids, keys and
@@ -159,7 +169,9 @@ type Outcome =
   | { readonly ok: true; readonly events: readonly LedgerEvent[] }
   | { readonly ok: false; readonly reasonCode: AuthRejection };
 
-const fail = (reasonCode: AuthRejection): SubmitResult => ({ ok: false, reasonCode });
+// Every result handed to a caller is a NEW, frozen object (N-2): a cached rejection can never be
+// altered by a caller (`r.ok = true`) and re-read as an acceptance later.
+const fail = (reasonCode: AuthRejection): SubmitResult => Object.freeze({ ok: false as const, reasonCode });
 const key = (principalId: string, nonce: string): string => JSON.stringify([principalId, nonce]);
 const isUint = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
@@ -181,6 +193,8 @@ export class AuthorizedLedger implements ParticipationLookup {
   readonly #annulmentEnabled: boolean;
   readonly #consumed = new Map<string, Consumed>();
   #clockValue = 0;
+  /** Highest sequencer time ever read. A clock that goes back is refused (N-4), so R6b cannot be re-opened by rewinding it. */
+  #highWater = 0;
 
   /** Throws `TypeError` on invalid deployment configuration (not attacker input), like `Eip712AttestationVerifier`. */
   constructor(config: AuthorizedLedgerConfig) {
@@ -224,13 +238,13 @@ export class AuthorizedLedger implements ParticipationLookup {
   /** Validates and applies one signed request. Never throws; every failure is a reason code and changes nothing. */
   submit(request: unknown): SubmitResult {
     try {
-      return this.submitUnchecked(request);
+      return this.#submitUnchecked(request);
     } catch {
       return fail(AuthRejection.LEDGER_INTERNAL_ERROR); // a surprising throw (e.g. a hostile registry) is a rejection, never a pass
     }
   }
 
-  private submitUnchecked(request: unknown): SubmitResult {
+  #submitUnchecked(request: unknown): SubmitResult {
     // 0. Shape. A correction may lack its approver here so that we can answer COSIGN_REQUIRED later.
     const parsed = parseLedgerEventDraft(request, { allowMissingApproval: true });
     if (!parsed.ok) return fail(parsed.reasonCode === ParseRejection.EVENT_TYPE_NOT_SUPPORTED ? AuthRejection.EVENT_TYPE_NOT_SUPPORTED : AuthRejection.EVENT_MALFORMED);
@@ -245,13 +259,15 @@ export class AuthorizedLedger implements ParticipationLookup {
 
     const now = this.#config.now();
     if (!isUint(now)) return fail(AuthRejection.LEDGER_CLOCK_INVALID);
+    if (now < this.#highWater) return fail(AuthRejection.LEDGER_CLOCK_REGRESSION);
+    this.#highWater = now;
     if (draft.registrySeq !== this.#config.registrySeq) return fail(AuthRejection.LEDGER_REGISTRY_SEQ_MISMATCH);
 
     // 1. Authentication (R2, R3, R4): who signed, is it fresh and not valid for too long, is it new.
-    const auth = this.authenticate(draft);
+    const auth = this.#authenticate(draft);
     if (!auth.ok) return fail(auth.reasonCode);
     const { actor, digest, recoveredActor } = auth;
-    const lifetime = this.checkLifetime(draft.authorization.expiresAt, now);
+    const lifetime = this.#checkLifetime(draft.authorization.expiresAt, now);
     if (lifetime !== undefined) return fail(lifetime);
 
     const approval = draft.coAuthorizations[0];
@@ -266,27 +282,27 @@ export class AuthorizedLedger implements ParticipationLookup {
     if (earlier !== undefined) {
       if (earlier.fingerprint !== fingerprint) return fail(AuthRejection.LEDGER_NONCE_REPLAY);
       // The same signed request again: the original result, accepted or rejected, is returned and nothing is applied twice.
-      return earlier.outcome.ok ? { ok: true, events: earlier.outcome.events, replayed: true } : earlier.outcome;
+      return earlier.outcome.ok ? Object.freeze({ ok: true as const, events: earlier.outcome.events, replayed: true }) : fail(earlier.outcome.reasonCode);
     }
 
     // From here the request is authentic and unexpired. Its nonce is consumed whatever the result
     // (M-1): a request that the domain rules rejected now must not be replayable after the state changed.
-    const decided = this.decide(draft, actor, digest, recoveredActor, now);
+    const decided = this.#decide(draft, actor, digest, recoveredActor, now);
     const record: Consumed = { fingerprint, outcome: decided.outcome };
     this.#consumed.set(nonceKey, record);
     if (decided.outcome.ok && decided.approverKey !== undefined) this.#consumed.set(decided.approverKey, record);
-    return decided.outcome.ok ? { ok: true, events: decided.outcome.events, replayed: false } : decided.outcome;
+    return decided.outcome.ok ? Object.freeze({ ok: true as const, events: decided.outcome.events, replayed: false }) : fail(decided.outcome.reasonCode);
   }
 
   /** R3 (+ M-1): not expired and not valid for longer than the configured maximum lifetime. */
-  private checkLifetime(expiresAt: number, now: number): AuthRejection | undefined {
+  #checkLifetime(expiresAt: number, now: number): AuthRejection | undefined {
     if (expiresAt <= now) return AuthRejection.LEDGER_REQUEST_EXPIRED;
     if (expiresAt - now > this.#config.maxRequestTtlMs) return AuthRejection.LEDGER_REQUEST_TTL_EXCEEDED;
     return undefined;
   }
 
   /** Authorization by role (R1, R5, R6b, R8) and, for corrections, the approver (R10, R14); then the ledger fold (R6, R7, R11-R13). */
-  private decide(
+  #decide(
     draft: LedgerEventDraft,
     actor: Principal,
     digest: Uint8Array,
@@ -308,7 +324,7 @@ export class AuthorizedLedger implements ParticipationLookup {
       case LedgerEventType.PARTICIPATION_RECORDED:
       case LedgerEventType.NON_PARTICIPATION_LOCKED_RECORDED:
       case LedgerEventType.EVENT_ANNULLED: {
-        const r = this.authorizeManager(actor, draft.subjectFundId, draft.ipoId);
+        const r = this.#authorizeManager(actor, draft.subjectFundId, draft.ipoId);
         if (r !== undefined) return no(r);
         // R6b (M-2): once the sequencer clock reached the closing time, no state event or correction is
         // accepted, whether or not IPO_CLOSED was recorded yet. No grace period. An IPO that is already
@@ -319,7 +335,7 @@ export class AuthorizedLedger implements ParticipationLookup {
           if (now >= ipo.subscriptionClosesAt) return no(AuthRejection.IPO_WINDOW_ELAPSED);
         }
         if (draft.eventType === LedgerEventType.EVENT_ANNULLED) {
-          const a = this.authorizeApproval(draft, actor, recoveredActor, digest, now);
+          const a = this.#authorizeApproval(draft, actor, recoveredActor, digest, now);
           if (!a.ok) return no(a.reasonCode);
           if (approval !== undefined) approverKey = key(approval.approverId, approval.requestNonce);
         }
@@ -331,7 +347,7 @@ export class AuthorizedLedger implements ParticipationLookup {
     // carries a replacement appends it in the same atomic step, derived from the signed request.
     const drafts: unknown[] = [draft];
     if (draft.eventType === LedgerEventType.EVENT_ANNULLED && draft.payload.replacement !== null) {
-      drafts.push(this.replacementDraft(draft, draft.payload.replacement));
+      drafts.push(this.#replacementDraft(draft, draft.payload.replacement));
     }
     this.#clockValue = now;
     const appended: AppendResult = this.#ledger.appendAtomic(drafts);
@@ -340,7 +356,7 @@ export class AuthorizedLedger implements ParticipationLookup {
   }
 
   /** R2: registered actor, expected scheme, and a canonical signature by the actor's one key over the right typed data. */
-  private authenticate(
+  #authenticate(
     draft: LedgerEventDraft,
   ):
     | { readonly ok: true; readonly actor: Principal; readonly digest: Uint8Array; readonly recoveredActor: string }
@@ -400,7 +416,7 @@ export class AuthorizedLedger implements ParticipationLookup {
   }
 
   /** R1 + R5 for a fund manager acting on one fund. Returns a rejection or undefined. */
-  private authorizeManager(actor: Principal, fundId: FundId, ipoId: IpoId): AuthRejection | undefined {
+  #authorizeManager(actor: Principal, fundId: FundId, ipoId: IpoId): AuthRejection | undefined {
     const fund = this.#config.funds.getFund(fundId);
     if (fund === undefined) return AuthRejection.FUND_NOT_REGISTERED;
     if (this.#config.ipos.getIpo(ipoId) === undefined) return AuthRejection.IPO_NOT_FOUND;
@@ -412,7 +428,7 @@ export class AuthorizedLedger implements ParticipationLookup {
    * R10 / R14 for a correction: the approval must exist, be signed by a registered REGISTRY_ADMIN's
    * key over the digest of THIS annulment, be fresh and new, and the approver must be independent.
    */
-  private authorizeApproval(
+  #authorizeApproval(
     draft: Extract<LedgerEventDraft, { eventType: "EVENT_ANNULLED" }>,
     actor: Principal,
     recoveredActor: string,
@@ -440,7 +456,7 @@ export class AuthorizedLedger implements ParticipationLookup {
     }
     const recovered = recoverAttestationSigner(digest, co.signature);
     if (recovered === undefined || recovered !== approver.address) return no(AuthRejection.LEDGER_SIGNATURE_INVALID);
-    const lifetime = this.checkLifetime(co.expiresAt, now);
+    const lifetime = this.#checkLifetime(co.expiresAt, now);
     if (lifetime !== undefined) return no(lifetime);
     if (this.#consumed.has(key(approver.principalId, co.requestNonce))) return no(AuthRejection.LEDGER_NONCE_REPLAY);
     const independent = approverIsIndependent({
@@ -456,7 +472,7 @@ export class AuthorizedLedger implements ParticipationLookup {
   }
 
   /** The state event a correction with `replacement` appends right after itself (design §2.3), derived from the signed request. */
-  private replacementDraft(annul: Extract<LedgerEventDraft, { eventType: "EVENT_ANNULLED" }>, state: "PARTICIPATING" | "NON_PARTICIPATION_LOCKED"): unknown {
+  #replacementDraft(annul: Extract<LedgerEventDraft, { eventType: "EVENT_ANNULLED" }>, state: "PARTICIPATING" | "NON_PARTICIPATION_LOCKED"): unknown {
     const common = {
       ipoId: annul.ipoId,
       subjectFundId: annul.subjectFundId,

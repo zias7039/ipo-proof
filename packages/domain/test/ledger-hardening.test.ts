@@ -6,7 +6,8 @@
 import { describe, expect, it } from "vitest";
 import * as barrel from "../src/index.js";
 import { HashChainedLedger, verifyChain } from "../src/ledger/chain.js";
-import { LEDGER_GENESIS_PREV_HASH, ledgerGenesisHash } from "../src/ledger/events.js";
+import { LEDGER_GENESIS_PREV_HASH, computeEventHash, ledgerGenesisHash } from "../src/ledger/events.js";
+import type { LedgerEventUnhashed } from "../src/ledger/events.js";
 import { AuthorizedLedger } from "../src/ledger/authorized.js";
 import { PrincipalRole } from "../src/ledger/principals.js";
 import {
@@ -24,7 +25,7 @@ import {
   rej,
 } from "./ledger-auth-fixtures.js";
 import { HOUR, NOW } from "./fixtures.js";
-import { must, newLedger, participate, lock, plain } from "./ledger-fixtures.js";
+import { def, must, newLedger, participate, lock, plain } from "./ledger-fixtures.js";
 import { InMemoryFundRegistry, InMemoryIpoRegistry } from "../src/registry.js";
 
 const sub = (w: ReturnType<typeof makeAuthWorld>, r: unknown) => w.ledger.submit(r);
@@ -252,5 +253,139 @@ describe("OperatorAction binds the actor and the payload (design #38 section 3.2
     mustSubmit(w.ledger, await recordDraft({ nonce: "a" }));
     w.clock.t = CLOSES_AT;
     expect(sub(w, await closeDraft({ nonce: "c1", ledgerSeqAtClose: 7, expiresAt: CLOSES_AT + HOUR }))).toEqual(rej("LEDGER_CLOSE_SEQ_MISMATCH"));
+  });
+});
+
+describe("N-1: no method of the gate is reachable at run time except the public ones", () => {
+  const PUBLIC = ["annulmentAvailable", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed", "ledgerId", "submit"];
+
+  it("the prototype exposes exactly the allow-listed names (no decide / authenticate / authorize* / replacementDraft / checkLifetime / submitUnchecked)", () => {
+    expect(Object.getOwnPropertyNames(AuthorizedLedger.prototype).sort()).toEqual(PUBLIC);
+    expect(Object.getOwnPropertySymbols(AuthorizedLedger.prototype)).toEqual([]);
+    // nothing is inherited either: the chain ends at Object.prototype
+    expect(Object.getPrototypeOf(AuthorizedLedger.prototype)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyNames(AuthorizedLedger).sort()).toEqual(["length", "name", "prototype"]);
+    const w = makeAuthWorld();
+    expect(Object.getOwnPropertyNames(Object.getPrototypeOf(w.ledger)).sort()).toEqual(PUBLIC);
+  });
+
+  it("the low-level HashChainedLedger has only its documented methods and no static or prototype back door", () => {
+    expect(Object.getOwnPropertyNames(HashChainedLedger.prototype).sort()).toEqual(["append", "appendAtomic", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed"]);
+    expect(Object.getOwnPropertyNames(HashChainedLedger).sort()).toEqual(["fromEvents", "length", "name", "prototype"]);
+  });
+
+  it("QA PoC: calling decide() with a fake actor cannot record anything (the method does not exist)", async () => {
+    const w = makeAuthWorld();
+    const l = w.ledger as unknown as Record<string, unknown> & { submit(r: unknown): unknown };
+    const fakeManager = { principalId: "manager_y", role: "FUND_MANAGER", address: "0x" + "1".repeat(40), controllerId: "ctrl_fake", keyId: "manager_y" };
+    const unsigned = await recordDraft({ actor: "manager_y", fund: "fund_y", state: "NON_PARTICIPATION_LOCKED" });
+    for (const name of ["decide", "authenticate", "authorizeManager", "authorizeApproval", "replacementDraft", "checkLifetime", "submitUnchecked"]) {
+      expect(l[name], name).toBeUndefined();
+      expect(() => (l[name] as (...a: unknown[]) => unknown)(unsigned, fakeManager, new Uint8Array(32), fakeManager.address, NOW), name).toThrow(TypeError);
+      expect((AuthorizedLedger.prototype as unknown as Record<string, unknown>)[name], name).toBeUndefined();
+    }
+    // the only entry is submit, and it asks for a signature
+    expect(l.submit({ ...unsigned, authorization: { ...(unsigned["authorization"] as object), signature: `0x${"ab".repeat(65)}` } })).toEqual(rej("LEDGER_SIGNATURE_INVALID"));
+    // a fake principal object as the request is just a malformed request
+    expect(l.submit(fakeManager)).toEqual(rej("EVENT_MALFORMED"));
+    expect(w.ledger.events().length).toBe(0);
+    expect(w.ledger.getState("fund_y", "ipo_1")).toBe("UNKNOWN");
+    expect(w.ledger.isClosed("ipo_1")).toBe(false);
+  });
+});
+
+describe("N-2: results are fresh frozen objects; a cached rejection cannot be turned into an acceptance", () => {
+  it("mutating a returned rejection fails, and the same request still yields the original rejection", async () => {
+    const w = makeAuthWorld();
+    mustSubmit(w.ledger, await recordDraft({ nonce: "a" }));
+    const dup = await recordDraft({ nonce: "dup" }); // PARTICIPATING again: rejected by the domain rules
+    const first = w.ledger.submit(dup);
+    expect(first).toEqual(rej("PARTICIPATION_ALREADY_RECORDED"));
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(() => {
+      (first as unknown as Record<string, unknown>)["ok"] = true;
+    }).toThrow(TypeError);
+    const again = w.ledger.submit(dup);
+    expect(again).toEqual(rej("PARTICIPATION_ALREADY_RECORDED"));
+    expect(again).not.toBe(first);
+    expect(Object.isFrozen(again)).toBe(true);
+  });
+
+  it("accepted results and replays are frozen too, with frozen events", async () => {
+    const w = makeAuthWorld();
+    const d = await recordDraft({ nonce: "a" });
+    const r1 = w.ledger.submit(d);
+    const r2 = w.ledger.submit(d);
+    for (const r of [r1, r2]) {
+      expect(Object.isFrozen(r)).toBe(true);
+      expect(r.ok && Object.isFrozen(r.events)).toBe(true);
+    }
+    expect(r2).toMatchObject({ ok: true, replayed: true });
+    expect(w.ledger.submit({})).toSatisfy((r: object) => Object.isFrozen(r));
+  });
+});
+
+describe("N-4: a clock that goes back is refused; recordedAt never decreases", () => {
+  it("the gate refuses a rewound clock, so R6b cannot be re-opened (QA PoC), and the request is not burnt", async () => {
+    const w = makeAuthWorld();
+    const d = await recordDraft({ nonce: "late" });
+    w.clock.t = CLOSES_AT;
+    expect(sub(w, await recordDraft({ nonce: "x" }))).toEqual(rej("IPO_WINDOW_ELAPSED"));
+    w.clock.t = CLOSES_AT - 1;
+    expect(sub(w, d)).toEqual(rej("LEDGER_CLOCK_REGRESSION"));
+    expect(w.ledger.events().length).toBe(0);
+    // back at (or after) the high-water mark the gate works again, and the same request was not consumed
+    w.clock.t = CLOSES_AT;
+    expect(sub(w, d)).toEqual(rej("IPO_WINDOW_ELAPSED"));
+  });
+
+  it("an equal clock reading is fine; any smaller one is refused even with no event in between", async () => {
+    const w = makeAuthWorld();
+    expect(sub(w, await recordDraft({ nonce: "a" })).ok).toBe(true);
+    expect(sub(w, await recordDraft({ nonce: "b", fund: "fund_z" })).ok).toBe(true); // same time
+    w.clock.t = NOW - 1;
+    expect(sub(w, await recordDraft({ nonce: "c", fund: "fund_y", actor: "manager_y" }))).toEqual(rej("LEDGER_CLOCK_REGRESSION"));
+    expect(w.ledger.events().length).toBe(2);
+  });
+
+  it("the low-level chain refuses to append with a smaller recordedAt", () => {
+    const clock = { t: 100 };
+    const l = new HashChainedLedger(() => clock.t);
+    must(l.append(participate("fund_a", "ipo_1")));
+    clock.t = 99;
+    expect(l.append(participate("fund_b", "ipo_1"))).toEqual({ ok: false, reasonCode: "LEDGER_CLOCK_REGRESSION" });
+    clock.t = 100;
+    expect(l.append(participate("fund_b", "ipo_1")).ok).toBe(true);
+    expect(l.events().length).toBe(2);
+  });
+
+  it("verifyChain rejects a chain whose recordedAt goes down, even if every hash is consistent", () => {
+    const clock = { t: 1000 };
+    const l = new HashChainedLedger(() => clock.t);
+    must(l.append(participate("fund_a", "ipo_1")));
+    clock.t = 1001;
+    must(l.append(participate("fund_b", "ipo_1")));
+    const [e1, e2] = plain(l.events());
+    const body = { ...def(e2) } as Record<string, unknown>;
+    delete body["eventHash"];
+    const rewound = { ...body, recordedAt: (def(e1)["recordedAt"] as number) - 1 };
+    const rebuilt = { ...rewound, eventHash: computeEventHash(rewound as unknown as LedgerEventUnhashed) };
+    expect(verifyChain([e1, rebuilt])).toEqual({ ok: false, seq: 2, reasonCode: "LEDGER_CLOCK_REGRESSION" });
+    expect(verifyChain([e1, def(e2)]).ok).toBe(true);
+  });
+});
+
+describe("N-5: a chain checked without a ledgerId says so", () => {
+  it("verifyChain reports ledgerBound = false against the placeholder genesis and true when a ledgerId was given", async () => {
+    const a = makeAuthWorld({ config: { ledgerId: "ledger_a" } });
+    mustSubmit(a.ledger, await recordDraft({ nonce: "a", ledgerId: "ledger_a" }));
+    const stored = plain(a.ledger.events());
+    expect(verifyChain(stored, { ledgerId: "ledger_a" })).toMatchObject({ ok: true, ledgerBound: true });
+    expect(verifyChain(stored)).toMatchObject({ ok: false }); // not the placeholder genesis
+    const placeholder = new HashChainedLedger(() => NOW);
+    must(placeholder.append(participate("fund_a", "ipo_1")));
+    expect(verifyChain(plain(placeholder.events()))).toMatchObject({ ok: true, ledgerBound: false });
+    expect(verifyChain([])).toMatchObject({ ok: true, ledgerBound: false });
+    expect(verifyChain([], { ledgerId: "ledger_a" })).toMatchObject({ ok: true, ledgerBound: true });
   });
 });

@@ -34,11 +34,26 @@ export const ChainRejection = {
   LEDGER_EVENT_HASH_MISMATCH: "LEDGER_EVENT_HASH_MISMATCH",
   /** The injected clock did not return a non-negative safe integer. */
   LEDGER_CLOCK_INVALID: "LEDGER_CLOCK_INVALID",
+  /**
+   * `recordedAt` is smaller than the previous event's (N-4): the sequencer clock went back, or the
+   * chain was rebuilt with a rewound clock. Refused when appending and when verifying.
+   */
+  LEDGER_CLOCK_REGRESSION: "LEDGER_CLOCK_REGRESSION",
 } as const;
 export type ChainRejection = (typeof ChainRejection)[keyof typeof ChainRejection];
 
 export type ChainVerification =
-  | { readonly ok: true; readonly length: number; readonly headHash: string }
+  | {
+      readonly ok: true;
+      readonly length: number;
+      readonly headHash: string;
+      /**
+       * True only if the chain was verified against a `ledgerId` (its genesis hash). False means it was
+       * checked against the placeholder genesis only (N-5): internally consistent, but not shown to
+       * belong to any particular ledger instance, so do not treat it as the verified log of a ledger.
+       */
+      readonly ledgerBound: boolean;
+    }
   /** `seq` is the 1-based position of the first inconsistent event (the position it should have), not necessarily its own `seq` field. */
   | { readonly ok: false; readonly seq: number; readonly reasonCode: ChainRejection };
 
@@ -60,6 +75,7 @@ export function verifyChain(events: readonly unknown[], options: ChainOptions = 
   if (genesis === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_PREV_HASH_MISMATCH };
   const projection = new LedgerProjection();
   let prevHash = genesis;
+  let prevRecordedAt = 0;
   for (let i = 0; i < events.length; i++) {
     const position = i + 1;
     const parsed = parseLedgerEvent(events[i]);
@@ -71,14 +87,16 @@ export function verifyChain(events: readonly unknown[], options: ChainOptions = 
     if (computeEventHash(unhashed as LedgerEventUnhashed) !== eventHash) {
       return { ok: false, seq: position, reasonCode: ChainRejection.LEDGER_EVENT_HASH_MISMATCH };
     }
+    if (event.recordedAt < prevRecordedAt) return { ok: false, seq: position, reasonCode: ChainRejection.LEDGER_CLOCK_REGRESSION };
     const applied = projection.apply(event);
     if (!applied.ok) return { ok: false, seq: position, reasonCode: applied.reasonCode };
     prevHash = eventHash;
+    prevRecordedAt = event.recordedAt;
   }
   if (projection.hasPendingReplacement()) {
     return { ok: false, seq: events.length, reasonCode: ChainRejection.LEDGER_ANNUL_REPLACEMENT_MISSING };
   }
-  return { ok: true, length: events.length, headHash: prevHash };
+  return { ok: true, length: events.length, headHash: prevHash, ledgerBound: options.ledgerId !== undefined };
 }
 
 export type AppendResult =
@@ -149,6 +167,7 @@ export class HashChainedLedger implements ParticipationLookup {
       if (!parsed.ok) return { ok: false, reasonCode: parsed.reasonCode };
       const recordedAt = this.#now();
       if (!Number.isSafeInteger(recordedAt) || recordedAt < 0) return { ok: false, reasonCode: ChainRejection.LEDGER_CLOCK_INVALID };
+      if (prev !== undefined && recordedAt < prev.recordedAt) return { ok: false, reasonCode: ChainRejection.LEDGER_CLOCK_REGRESSION };
       const unhashed = {
         ...parsed.value,
         schemaVersion: LEDGER_SCHEMA_VERSION,
