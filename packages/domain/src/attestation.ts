@@ -26,6 +26,27 @@ export interface AttestationVerifier {
 }
 
 /**
+ * Runs an injected verifier and reduces whatever it answers to a verdict. Only an answer whose
+ * `ok` is exactly `true` passes; a throw, a non-object, `{ok: "yes"}`, `{ok: 1}`, a missing `ok` or an
+ * unknown `reasonCode` are all SIGNATURE_INVALID (fail closed, never a truthy-pass and never a throw).
+ */
+export function runVerifier(verifier: AttestationVerifier, attestation: CapacityAttestation): AttesterVerificationResult {
+  try {
+    const answer: unknown = verifier.verify(attestation);
+    if (typeof answer !== "object" || answer === null) return INVALID_VERDICT;
+    const ok: unknown = (answer as { ok?: unknown }).ok;
+    if (ok === true) return { ok: true };
+    const reason: unknown = (answer as { reasonCode?: unknown }).reasonCode;
+    return reason === AttesterVerificationFailure.ATTESTER_UNAUTHORIZED
+      ? { ok: false, reasonCode: AttesterVerificationFailure.ATTESTER_UNAUTHORIZED }
+      : INVALID_VERDICT;
+  } catch {
+    return INVALID_VERDICT;
+  }
+}
+const INVALID_VERDICT: AttesterVerificationResult = Object.freeze({ ok: false, reasonCode: AttesterVerificationFailure.SIGNATURE_INVALID });
+
+/**
  * Authorization-only verifier: signature verification is NOT performed. Kept for tests and
  * demos of the other `verifyBid` checks.
  *
@@ -43,6 +64,48 @@ export class AllowlistAttestationVerifier implements AttestationVerifier {
     return this.allowed.has(attestation.attesterId)
       ? { ok: true }
       : { ok: false, reasonCode: AttesterVerificationFailure.ATTESTER_UNAUTHORIZED };
+  }
+}
+
+/**
+ * Reads every field of an attestation exactly ONCE and returns a frozen deep copy, or `undefined`
+ * if reading throws (e.g. a throwing accessor) or the input is not an object. All later checks
+ * (shape, signature, rule evaluation, receipt) must use the copy, never the original, so that an
+ * object whose fields change between reads (accessors, shared mutable objects, proxies) cannot make
+ * the signature check and the rule engine see different values.
+ *
+ * It copies only; it does not judge the values (types and ranges are checked later, in the
+ * existing order, so reason codes do not change). Unknown extra properties are not copied.
+ * Holes and non-object entries in `underlyingExposures` become `undefined`/throw and are rejected.
+ */
+export function snapshotAttestation(source: unknown): CapacityAttestation | undefined {
+  try {
+    if (typeof source !== "object" || source === null) return undefined;
+    const s = source as Record<string, unknown>;
+    const rawExposures = s["underlyingExposures"];
+    const exposures: unknown = Array.isArray(rawExposures)
+      ? Object.freeze(
+          Array.from(rawExposures as unknown[], (e) => {
+            const x = e as Record<string, unknown>;
+            return Object.freeze({ fundId: x["fundId"], exposureKrw: x["exposureKrw"] });
+          }),
+        )
+      : rawExposures;
+    return Object.freeze({
+      attestationId: s["attestationId"],
+      fundId: s["fundId"],
+      ipoId: s["ipoId"],
+      ruleVersion: s["ruleVersion"],
+      grossCapacityKrw: s["grossCapacityKrw"],
+      underlyingExposures: exposures,
+      issuedAt: s["issuedAt"],
+      expiresAt: s["expiresAt"],
+      nonce: s["nonce"],
+      attesterId: s["attesterId"],
+      signature: s["signature"],
+    }) as unknown as CapacityAttestation;
+  } catch {
+    return undefined;
   }
 }
 
@@ -83,6 +146,8 @@ export const PublishRejection = {
   ATTESTATION_SUPERSEDED: "ATTESTATION_SUPERSEDED",
   /** For the same (fundId, ipoId), a replacement must have a strictly greater issuedAt than the current one. */
   NOT_NEWER_THAN_CURRENT: "NOT_NEWER_THAN_CURRENT",
+  /** The attestation could not be read once into a plain copy (not an object, or a field access threw). */
+  ATTESTATION_MALFORMED: "ATTESTATION_MALFORMED",
 } as const;
 export type PublishRejection = (typeof PublishRejection)[keyof typeof PublishRejection];
 
@@ -117,8 +182,12 @@ export class InMemoryAttestationStore implements AttestationSource, RevocationLo
 
   constructor(private readonly verifier: AttestationVerifier) {}
 
-  publish(attestation: CapacityAttestation): PublishResult {
-    const verdict = this.verifier.verify(attestation);
+  publish(input: CapacityAttestation): PublishResult {
+    // Read the input once. The verifier checks this copy and the store keeps this same copy, so what
+    // was verified is exactly what is served later.
+    const attestation = snapshotAttestation(input);
+    if (attestation === undefined) return { ok: false, reasonCode: PublishRejection.ATTESTATION_MALFORMED };
+    const verdict = runVerifier(this.verifier, attestation);
     if (!verdict.ok) return { ok: false, reasonCode: verdict.reasonCode };
 
     const existing = this.byId.get(attestation.attestationId);
@@ -180,6 +249,8 @@ function sameAttestation(a: CapacityAttestation, b: CapacityAttestation): boolea
     a.nonce === b.nonce &&
     a.attesterId === b.attesterId &&
     a.signature === b.signature &&
+    Array.isArray(a.underlyingExposures) &&
+    Array.isArray(b.underlyingExposures) &&
     a.underlyingExposures.length === b.underlyingExposures.length &&
     a.underlyingExposures.every(
       (e, i) => e.fundId === b.underlyingExposures[i]?.fundId && e.exposureKrw === b.underlyingExposures[i]?.exposureKrw,
