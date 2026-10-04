@@ -64,7 +64,7 @@
 | --- | --- | --- |
 | `schemaVersion` | 정수 | 현재 `1`. 레이아웃이 바뀌면 올린다 |
 | `seq` | 정수 | 시퀀서가 부여. 1부터 연속 |
-| `prevHash` | hex(소문자 64자) | 직전 이벤트의 `eventHash`. `seq = 1`의 `prevHash`는 **원장 genesis 해시**(`ledgerId`·`chainId`·`verifyingContract`에서 도출, §2.2.3). 이전 확정값 `"0"`×64 상수는 **대체되었다**(S-3) |
+| `prevHash` | hex(소문자 64자) | 직전 이벤트의 `eventHash`. `seq = 1`의 `prevHash`는 **원장 genesis 해시**(`ledgerId`에서 도출, §2.2.3). 이전 확정값 `"0"`×64 상수는 **대체되었다**(S-3) |
 | `eventType` | enum | §2.3 |
 | `ipoId` | 문자열 \| null | 대상 IPO. **`MANAGER_KEY_REVOKED`만 전역 이벤트라 `null`**이고 다른 모든 유형은 필수(§2.3.2) |
 | `subjectFundId` | 문자열 \| null | 상태가 바뀌는 펀드. IPO 단위 이벤트는 `null` |
@@ -96,19 +96,19 @@
 
 **도메인 태그.** `eventHash`의 입력은 이벤트를 그대로 직렬화한 것이 아니라 `{domain, event}` 객체이다. `domain`은 상수 `"ipo-proof/ledger-event/v1"`이고 `event`는 `eventHash`를 뺀 모든 필드(서명, `schemaVersion`, `seq`, `prevHash`, `recordedAt` 포함)이다. 같은 `canonicalJson`+SHA-256을 쓰는 다른 해시(#10의 `inputsDigest`/`finalVerdictDigest`, 영수증 `proofHash` 등)와 입력 공간을 분리하기 위한 것이다. 태그 이름은 `ipo-proof/<대상>/v<정수>` 형식이고, 대상의 구조가 바뀌면 버전을 올린다(원장 봉투는 `schemaVersion`도 함께). 이 해시 태그는 EIP-712 서명 도메인(`name`/`version`/`chainId`/`verifyingContract`, §3.2)과 **별개**이며 서로 대신하지 못한다.
 
-**참조 벡터** (합성 값. 서명 바이트는 `ab`×65 자리표시자이고 이 문서는 서명을 검증하지 않는다). 원장 `ledgerId = ledger_poc`, `chainId = 1`, `verifyingContract = 0x1111…1111`(`0x` + `11`×20)에서 도출한 genesis 해시(§2.2.3)와, 그 위의 첫 이벤트(`seq = 1`, `PARTICIPATION_RECORDED`, `origin = INDEPENDENT`, `recordedAt = requestedAt = 1800000000000`, `registrySeq = 1`, `requestNonce = nonce_1`, `expiresAt = 2000000000000`, `scheme = EIP712_LEDGER_ACTION_V1`, `ipoId = ipo_1`, `subjectFundId = fund_x`, `actorId = manager_x`)를 `hash.ts`와 같은 규칙으로 계산한 값:
+**참조 벡터** (합성 값. 서명 바이트는 `ab`×65 자리표시자이고 이 문서는 서명을 검증하지 않는다). 원장 `ledgerId = ledger_poc`에서 도출한 genesis 해시(§2.2.3)와, 그 위의 첫 이벤트(`seq = 1`, `PARTICIPATION_RECORDED`, `origin = INDEPENDENT`, `recordedAt = requestedAt = 1800000000000`, `registrySeq = 1`, `requestNonce = nonce_1`, `expiresAt = 2000000000000`, `scheme = EIP712_LEDGER_ACTION_V1`, `ipoId = ipo_1`, `subjectFundId = fund_x`, `actorId = manager_x`)를 `hash.ts`와 같은 규칙으로 계산한 값:
 
 ```
 genesis 입력 canonicalJson =
-{"chainId":1,"domain":"ipo-proof/ledger-genesis/v1","ledgerId":"ledger_poc","verifyingContract":"0x1111111111111111111111111111111111111111"}
-genesisHash = dc44161723bdda6471073424cafc24f0129761c6746028f1efb600d374748731
+{"domain":"ipo-proof/ledger-genesis/v1","ledgerId":"ledger_poc"}
+genesisHash = 87a9024373dfd1ac0f3b0aa6a2cdd7dcdf725dbba361b1767b826e67563cdaea
 
 canonicalJson({domain, event}) =
-{"domain":"ipo-proof/ledger-event/v1","event":{"actorId":"manager_x","authorization":{"expiresAt":2000000000000,"requestNonce":"nonce_1","scheme":"EIP712_LEDGER_ACTION_V1","signature":"0xababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"},"coAuthorizations":[],"eventType":"PARTICIPATION_RECORDED","ipoId":"ipo_1","payload":{"from":"UNKNOWN","origin":"INDEPENDENT","to":"PARTICIPATING"},"prevHash":"dc44161723bdda6471073424cafc24f0129761c6746028f1efb600d374748731","recordedAt":1800000000000,"registrySeq":1,"requestedAt":1800000000000,"schemaVersion":1,"seq":1,"subjectFundId":"fund_x"}}
-eventHash = c157aa2f5adef5017c41f1fefa2260349bf865b428c89c0b8bd49cd5ca029ed1
+{"domain":"ipo-proof/ledger-event/v1","event":{"actorId":"manager_x","authorization":{"expiresAt":2000000000000,"requestNonce":"nonce_1","scheme":"EIP712_LEDGER_ACTION_V1","signature":"0xababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"},"coAuthorizations":[],"eventType":"PARTICIPATION_RECORDED","ipoId":"ipo_1","payload":{"from":"UNKNOWN","origin":"INDEPENDENT","to":"PARTICIPATING"},"prevHash":"87a9024373dfd1ac0f3b0aa6a2cdd7dcdf725dbba361b1767b826e67563cdaea","recordedAt":1800000000000,"registrySeq":1,"requestedAt":1800000000000,"schemaVersion":1,"seq":1,"subjectFundId":"fund_x"}}
+eventHash = f3468d269607ca73289c570edeba2cc22f50ec7f631f12aef7da46ded3d64398
 ```
 
-도메인 태그 없이 `event`만 해시하면 `4b92504c…7150`이 나와 위 값과 다르다(L-48에서 이 차이를 검사한다). 이전 판의 벡터(`prevHash = "0"×64`, `eventHash = 373ca330…1967`)는 genesis 변경(S-3)으로 **폐기**한다. 이 벡터는 `hash.ts`의 `canonicalJson`을 그대로 옮긴 스크립트로 계산했고 구현 테스트에는 아직 없다(구현 봇이 테스트로 고정). 이 직렬화가 RFC 8785(JCS)와 같은 바이트열을 내는지는 확인하지 않았다(미확인). 안전한 정수만 쓰므로 비슷하리라 추정할 뿐이다.
+도메인 태그 없이 `event`만 해시하면 `2eddb7f5…a4a8`이 나와 위 값과 다르다(L-48에서 이 차이를 검사한다). 이전 판의 벡터(`prevHash = "0"×64`, `eventHash = 373ca330…1967`)는 genesis 변경(S-3)으로 **폐기**한다. 이 벡터는 `hash.ts`의 `canonicalJson`을 그대로 옮긴 스크립트로 계산했고 구현 테스트에는 아직 없다(구현 봇이 테스트로 고정). 이 직렬화가 RFC 8785(JCS)와 같은 바이트열을 내는지는 확인하지 않았다(미확인). 안전한 정수만 쓰므로 비슷하리라 추정할 뿐이다.
 
 ### 2.2.2 서명 스킴 식별자 (`scheme`, 확정)
 
@@ -138,7 +138,7 @@ eventHash = c157aa2f5adef5017c41f1fefa2260349bf865b428c89c0b8bd49cd5ca029ed1
 | 항목 | 확정 |
 | --- | --- |
 | `ledgerId` | 원장 인스턴스 하나당 하나의 식별자(`^[a-z][a-z0-9_]{0,63}$`). 생성 시 설정으로 고정하고 바꿀 수 없다 |
-| genesis 해시 | `sha256(canonicalJson({domain: "ipo-proof/ledger-genesis/v1", ledgerId, chainId, verifyingContract}))`. `chainId`는 정수, `verifyingContract`는 소문자 `0x` 주소 문자열이며 EIP-712 서명 도메인(§3.2)의 값과 같다. 참조 값은 §2.2.1 |
+| genesis 해시 | `sha256(canonicalJson({domain: "ipo-proof/ledger-genesis/v1", ledgerId}))`. **입력은 `ledgerId` 하나**이다. `chainId`·`verifyingContract`는 이미 EIP-712 서명 도메인에 있어 서명 재생을 막고, 체인 연결의 구분은 `ledgerId`가 맡는다. 그래서 `ledgerId`는 배포 전체에서 유일해야 한다(구성 요건). 참조 값은 §2.2.1. *(이 문서의 초안은 `chainId`·`verifyingContract`도 입력에 넣었으나, 구현 PR #40(`8c632c2`)이 `ledgerId`만 쓰고 viem `hashDomain`과 교차검증한 구현이 이미 있으며 서명 재생 방어에 차이가 없어 구현에 맞췄다. 같은 `ledgerId`에 다른 `chainId`를 쓰는 배치는 체인 해시는 같고 서명은 다르다)* |
 | 사용처 | `seq = 1`의 `prevHash`, 빈 체인의 `headHash`, EIP-712 서명 도메인의 `salt`(아래) |
 | 서명 도메인 | 원장 도메인을 `EIP712Domain(string name,string version,uint256 chainId,address verifyingContract,bytes32 salt)`로 하고 `salt` = genesis 해시. `salt`는 EIP-712 표준의 선택 필드(프로토콜 구분용 마지막 수단의 도메인 분리자)이다. 증빙 어테스테이션 도메인은 바꾸지 않는다. 같은 서명이 다른 `ledgerId`의 인스턴스에서는 `LEDGER_SIGNATURE_INVALID`가 된다 |
 | 시간 단조성 | 이벤트의 `recordedAt`은 직전 이벤트의 `recordedAt`보다 작을 수 없다. 시퀀서 시계가 직전 값보다 작으면 새 이벤트를 만들지 않고 `LEDGER_CLOCK_REGRESSION`으로 거부(fail closed). 체인 검증은 감소를 `LEDGER_RECORDED_AT_DECREASING`으로 보고한다 |
@@ -149,7 +149,7 @@ eventHash = c157aa2f5adef5017c41f1fefa2260349bf865b428c89c0b8bd49cd5ca029ed1
 | **B. genesis 해시 + 도메인 `salt`** | 위 표 | 체인 연결과 서명 모두 인스턴스에 묶인다. 메시지 타입은 바뀌지 않고 도메인 구조만 바뀐다. **채택** |
 | C. 이벤트마다 `ledgerId` 필드 | 봉투와 서명 메시지 6종에 필드 추가 | 서명 구조를 전부 바꿔야 하는 비용이 큼 |
 
-대가: PR #35의 상수 genesis 테스트가 바뀌고 `HashChainedLedger`/`verifyChain`이 `ledgerId`·`chainId`·`verifyingContract`를 받아야 한다. 이 변경은 절단 대응(체크포인트, §2.5)과 같은 PR에서 하는 것이 좋다.
+대가: PR #35의 상수 genesis 테스트가 바뀌고 `HashChainedLedger`/`verifyChain`이 `ledgerId`를 받아야 한다. `ledgerId`를 지정하지 않은 저수준 `HashChainedLedger`의 `"0"`×64 기본값은 PR #40이 패키지 공개 export에서 내려 놓았으므로 용인한다(게이트와 운영 원장은 `ledgerId` 필수). 이 변경은 절단 대응(체크포인트, §2.5)과 같은 PR에서 하는 것이 좋다.
 
 ### 2.3 이벤트 유형
 
@@ -568,7 +568,8 @@ R1은 레지스트리가 운용사–펀드 관계의 진실이라는 가정에 
 | `lastWindowBeforeClose` | 이 구간 안의 취소는 `afterState` 필수 (R15) | 선택 | 적용 안 함 | **진영 님 결정 항목** (Q14-N2, #10 Q10-N5) |
 | `maxFindingsPerIpo` | IPO당 `FINDING_ANNOTATED` 개수 상한 (R17) | 선택 | 제한 없음 | 진영 님, 보안QA (Q14-N11) |
 | `checkpointInterval` | 체크포인트 발행 주기 (§2.5) | 선택 | `IPO_CLOSED`/`IPO_FINALIZED` 직후에만 | #15/#18과 함께 |
-| `ledgerId`, `chainId`, `verifyingContract` | 원장 인스턴스 식별 (§2.2.3) | 필수 | 구성 오류 | 배포 설정 |
+| `ledgerId` | 원장 인스턴스 식별, genesis 해시와 서명 도메인 `salt`의 입력 (§2.2.3). 배포 전체에서 유일해야 함 | 필수 | 구성 오류 | 배포 설정 |
+| `chainId`, `verifyingContract` | EIP-712 서명 도메인 (§3.2). genesis 입력은 아님 | 필수 | 구성 오류 | 배포 설정 |
 
 ---
 
@@ -636,7 +637,7 @@ R1은 레지스트리가 운용사–펀드 관계의 진실이라는 가정에 
 | T-22 | 독립 선언 `PARTICIPATING` + 활성 입찰 상태에서 R10 정정 + `replacement = LOCKED`로 BIND-1 우회(#10 E-09의 변형) | – | 정정에 독립 승인자 필요(R14), 모든 정정이 체인에 남음. 접수 계층 가드는 기본 제안(Q14-N8, 보안QA는 이 기본안에 찬성) | **입찰 저장소를 도입하는 PR 전까지는 구현에서 열려 있다**(PR #40 게이트에는 가드를 둘 곳이 없고 독립 `PARTICIPATING` 뒤 정정+`LOCKED`가 수락됨, 보안QA S-7). R12는 `origin = BIND_1`만 보호 |
 | T-23 | 구현 간 직렬화 차이로 같은 이벤트가 다른 `eventHash`를 가짐(체인 검증 오탐, 분쟁) | – | §2.2.1의 바이트 수준 정의(정수만, 소문자 hex, 정규화 없음, 키 정렬), 참조 벡터(L-48) | 온체인 이식(#18) 시 재정의. RFC 8785와의 동일성은 미확인 |
 | T-24 | 키 등록·교체 권한과 R14의 충돌: 관리자가 운용사의 새 키를 자기가 통제하는 키로 등록한 뒤 그 키로 정정에 서명하고 승인자로서 승인(보안QA S-1) | – | R20: 관리자 + 독립 확인자 쿼럼, 체인에 남는 `REGISTRY_KEY_CHANGED`, 지연 적용(`keyActivationDelay`), I6(승인자는 그 키의 등록 서명자가 아님), 폐기된 주소 영구 재등록 불가 | **쿼럼 두 주체의 공모**, 최초 설정 오염, 운영자·관리자 키의 긴급 폐기 부재, 확인자를 구성할 수 없으면 변경 불가(가용성). 관리자가 1명뿐이면 I6 때문에 교체한 운용사의 정정이 꺼짐. 일반 쿼럼은 #13 |
-| T-25 | 절단·이식: 마지막 이벤트(특히 마감 이후의 주석)를 삭제해도 체인이 유효해 보임, 한 원장의 체인·서명을 다른 원장(스테이징/운영)에 이식·재생 | genesis 고정 상수, 서명이 원장에 묶이지 않음 | genesis 해시와 서명 도메인 `salt`에 `ledgerId`·`chainId`·`verifyingContract` 포함(§2.2.3), 서명된 체크포인트와 `expectedHead` 입력(§2.5) | 체크포인트를 아무도 보관·대조하지 않으면 탐지되지 않음. 마지막 체크포인트 이후의 절단은 막지 못함. 체크포인트 발행 시점·보관은 운영 규약 |
+| T-25 | 절단·이식: 마지막 이벤트(특히 마감 이후의 주석)를 삭제해도 체인이 유효해 보임, 한 원장의 체인·서명을 다른 원장(스테이징/운영)에 이식·재생 | genesis 고정 상수, 서명이 원장에 묶이지 않음 | genesis 해시와 서명 도메인 `salt`에 `ledgerId` 포함(§2.2.3), 서명된 체크포인트와 `expectedHead` 입력(§2.5) | 체크포인트를 아무도 보관·대조하지 않으면 탐지되지 않음. 마지막 체크포인트 이후의 절단은 막지 못함. 체크포인트 발행 시점·보관은 운영 규약 |
 | T-26 | 서명 재생: 거부된 요청이 상태 변경 뒤 수락됨, 사실상 만료 없는 서명, 거부 기록 유실 후 재생 | 거부 시 nonce 미소비, TTL 상한 없음 | R3 `maxTtl`, R4 도메인 거부 요청의 nonce 소비·영속, 유실 시 `maxTtl` 격리(§4.7) | `maxTtl` 값과 소비 기록 보관은 설정·운영에 의존(Q14-N11). 서명되지 않는 `requestedAt`은 첫 접수값만 기록 |
 
 ### 6.3 정리
@@ -752,8 +753,8 @@ ROADMAP의 미결정 항목 "`verifyBid` 통과가 참여 기록을 구속하지
 | L-44 | 취소 요청이 `IPO_CLOSED` 직전 순번 / 직후 순번 | 직전: 반영, 컷오프 유효 상태 `UNKNOWN`. 직후: `IPO_ALREADY_CLOSED` |
 | L-45 | 같은 취소 요청 재전송 / 이미 취소된 `bidId`를 새 nonce로 취소 | 첫 결과 그대로, 이벤트 1개 / `BID_ALREADY_WITHDRAWN`, 새 이벤트 없음 |
 | L-46 | 재제출(대체)이 있은 뒤 취소 | 대체 때 원장 이벤트 없음. 취소 때 `EVENT_ANNULLED(BID_WITHDRAWN)` 한 번 |
-| L-47 | 빈 체인의 `headHash`. 첫 이벤트(`seq = 1`)의 `prevHash`. 서로 다른 `ledgerId`(또는 `chainId`, `verifyingContract`)로 만든 두 원장 | 둘 다 §2.2.3의 **genesis 해시**(참조 벡터: `ledgerId = ledger_poc`, `chainId = 1`, `verifyingContract = 0x`+`11`×20 → `dc441617…8731`). 첫 이벤트의 `prevHash`가 `"0"`×64·63자·65자·대문자·빈 문자열이거나 다른 원장의 genesis이면 `LEDGER_PREV_HASH_MISMATCH` 또는 `EVENT_MALFORMED`, 원장 불변. 두 원장의 genesis는 서로 다르다(L-96) |
-| L-48 | §2.2.1 참조 벡터의 이벤트 `eventHash` 계산 / 도메인 태그 없이 `event`만 해시 / 다른 태그(`ipo-proof/ledger-event/v2`)로 해시한 값을 `eventHash`로 가진 이벤트 | `c157aa2f…9ed1`과 일치 / `4b92504c…7150`이 나오며 저장된 값과 다르면 `LEDGER_EVENT_HASH_MISMATCH` / 마찬가지로 `LEDGER_EVENT_HASH_MISMATCH` (T-23) |
+| L-47 | 빈 체인의 `headHash`. 첫 이벤트(`seq = 1`)의 `prevHash`. 서로 다른 `ledgerId`로 만든 두 원장 | 둘 다 §2.2.3의 **genesis 해시**(참조 벡터: `ledgerId = ledger_poc` → `87a90243…daea`). 첫 이벤트의 `prevHash`가 `"0"`×64·63자·65자·대문자·빈 문자열이거나 다른 원장의 genesis이면 `LEDGER_PREV_HASH_MISMATCH` 또는 `EVENT_MALFORMED`, 원장 불변. 두 원장의 genesis는 서로 다르다(L-96) |
+| L-48 | §2.2.1 참조 벡터의 이벤트 `eventHash` 계산 / 도메인 태그 없이 `event`만 해시 / 다른 태그(`ipo-proof/ledger-event/v2`)로 해시한 값을 `eventHash`로 가진 이벤트 | `f3468d26…4398`과 일치 / `2eddb7f5…a4a8`이 나오며 저장된 값과 다르면 `LEDGER_EVENT_HASH_MISMATCH` / 마찬가지로 `LEDGER_EVENT_HASH_MISMATCH` (T-23) |
 | L-49 | `canonicalJson` 단위 검사: 같은 객체를 키 순서만 바꿔 직렬화, 중첩 객체, 제어문자·비-BMP 문자·짝 없는 서로게이트, `-0`, 2^53 이상의 정수, 실수, `NaN`, `undefined` 값, `bigint` | 키 순서와 무관하게 같은 문자열. 제어문자는 소문자 `\u00xx`, `-0`은 `0`. 정수 범위 밖·실수·`NaN`·`undefined`·`bigint`는 직렬화 오류(이벤트 파서에서는 `EVENT_MALFORMED`) |
 | L-50 | 서명의 `0x` 뒤 hex에 대문자가 섞인 이벤트 / 130자가 아닌 서명 | `EVENT_MALFORMED`. 소문자 서명만 수용 |
 | L-51 | `coAuthorizations[0]`에서 `approverId` 누락, 식별자 형식 위반, 알 수 없는 추가 필드 / 정상 | `EVENT_MALFORMED` / 수용. 서명 검증 단계에서는 `approverId`가 서명된 `AnnulmentApproval.approverId`와 다르면 `LEDGER_SIGNATURE_INVALID`, 그 `approverId`로 R14 검사(L-34~L-38)를 수행 |
@@ -801,7 +802,7 @@ ROADMAP의 미결정 항목 "`verifyBid` 통과가 참여 기록을 구속하지
 | L-93 | 거부 소비 기록이 유실된 재시작 | `maxTtl` 동안 신규 요청을 `LEDGER_NONCE_STORE_UNAVAILABLE`로 격리. 성공 이벤트의 nonce는 체인에서 재구성되어 `LEDGER_NONCE_REPLAY` |
 | L-94 | 같은 서명에 다른 `requestedAt`을 붙여 재전송 | 같은 요청으로 취급하고 첫 접수 이벤트를 돌려줌, 새 이벤트 없음 |
 | L-95 | `recordedAt`이 직전 이벤트보다 작은 이벤트가 든 체인 / 시퀀서 시계가 직전 `recordedAt`보다 뒤로 감 / 같은 값 | 체인 검증 `LEDGER_RECORDED_AT_DECREASING` / 접수 거부 `LEDGER_CLOCK_REGRESSION`(nonce 미소비) / 허용(비감소) |
-| L-96 | 원장 A의 서명 요청·체인을 원장 B(다른 `ledgerId`)에 제출 | 서명 도메인 `salt`(= genesis 해시)가 달라 `LEDGER_SIGNATURE_INVALID`, 체인은 첫 이벤트부터 `LEDGER_PREV_HASH_MISMATCH` (T-25) |
+| L-96 | 원장 A의 서명 요청·체인을 원장 B(다른 `ledgerId`, 나머지 도메인 값은 같음)에 제출 | 서명 도메인 `salt`(= genesis 해시)가 달라 `LEDGER_SIGNATURE_INVALID`, 체인은 첫 이벤트부터 `LEDGER_PREV_HASH_MISMATCH` (T-25) |
 | L-97 | 체크포인트 이후 이벤트 몇 개를 삭제한 체인을 `expectedHead`와 함께 검증 / 일치하는 체인 / `expectedHead` 없이 검증 / 체크포인트 서명자가 운영자가 아님 | `LEDGER_CHAIN_TRUNCATED` / 통과 / 통과하되 결과에 `truncationChecked: false` / `LEDGER_SIGNATURE_INVALID` 또는 체크포인트 거부. 마지막 체크포인트 이후의 절단은 탐지하지 못함(문서화) |
 | L-98 | 취소 이벤트만 받은 검증자가 `BidWithdrawal` 서명을 재검증 | `payload.bidId`(= `bindingId`)와 `payload.withdrawnBidId`로 서명 메시지를 복원해 검증 통과. 둘 중 하나를 바꾸면 `LEDGER_SIGNATURE_INVALID` (S-6) |
 | L-99 | (테스트용 합성 설정: `maxWithdrawalsPerFundIpo`, `lastWindowBeforeClose`가 있을 때만) 상한에 도달한 뒤 취소 / 마감 직전 구간 안에서 `afterState` 없이 취소 / 구간 안에서 `afterState`와 함께 취소 | `LEDGER_WITHDRAWAL_LIMIT_EXCEEDED` / `LEDGER_WITHDRAWAL_AFTERSTATE_REQUIRED` / 수용. **이 테스트의 수치는 규칙 동작 검증용 합성값이며 설계값이 아니다**(Q14-N2) |
@@ -888,25 +889,26 @@ PR #35는 설계가 정하지 않은 항목을 임시값으로 두었다. 아래
 
 | # | 항목 | 구현 임시값 | 설계 확정값 | 차이 | 구현 변경 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | genesis `prevHash` | `"0".repeat(64)` (`LEDGER_GENESIS_PREV_HASH`) | **genesis 해시**(`ledgerId`·`chainId`·`verifyingContract`로 계산, §2.2.3). 첫 버전 설계(0×64)는 보안QA S-3로 **대체**됨 | **다름** | genesis 계산과 `ledgerId`/`salt` 구성 추가(L-47, L-96) |
+| 1 | genesis `prevHash` | `"0".repeat(64)` (`LEDGER_GENESIS_PREV_HASH`) | **genesis 해시**(`ledgerId`로 계산, §2.2.3). 첫 버전 설계(0×64)는 보안QA S-3로 **대체**됨 | **다름**. PR #40 `8c632c2`가 `ledgerId`만 입력으로 이미 구현해 이 문서가 구현에 맞춤 | `ledgerId` 미지정 저수준 기본값(0×64)은 공개 export에서 제외된 것으로 용인. 벡터 테스트로 확인(L-47, L-96) |
 | 2 | 해시 도메인 태그 | `sha256CanonicalHex({domain: "ipo-proof/ledger-event/v1", event})` | 같음, `canonicalJson` 정의와 참조 벡터 명시 (§2.2.1) | 해시 구조는 같음. 서명 hex: 구현은 대소문자 모두 허용(`/^0x[0-9a-fA-F]{130}$/`), 확정은 소문자만(S-2 확정, 아래). `requestedAt`은 서명되지 않으므로 멱등 지문에서 제외하고 첫 접수 값을 기록(§4.7) | 서명 정규식을 소문자로 제한(L-50). 참조 벡터 테스트 추가(L-48, 벡터는 genesis 변경에 맞춰 교체) |
 | 3 | `coAuthorizations` 항목 | `{approverId, scheme, requestNonce, expiresAt, signature}` | 같음 (§2.2) | 같음 | 없음. L-51 |
 | 4 | `scheme` 식별자 | 형식 `^[A-Z][A-Z0-9_]{0,63}$`만 검사, 유형별 대응 없음. 픽스처가 `EIP712_LEDGER_ACTION_V1`을 모든 `authorization`(운영자 이벤트, 정정, 취소 포함)에 사용. 운영자 이벤트와 `BidWithdrawal`의 이름 없음 | 6종 이름과 유형별 정확 일치 (§2.2.2, R16). 운영자: `EIP712_LEDGER_OPERATOR_ACTION_V1`, 취소: `EIP712_LEDGER_BID_WITHDRAWAL_V1`, 정정: `EIP712_LEDGER_ANNULMENT_V1`, 승인자(픽스처가 이미 쓴 이름): `EIP712_LEDGER_ANNULMENT_APPROVAL_V1`, 키 폐기: `EIP712_LEDGER_KEY_REVOCATION_V1` | **다름**: 구현이 더 느슨함 | 유형별 대응 검사와 `LEDGER_AUTH_SCHEME_MISMATCH` 추가(L-52, L-53). `IPO_CLOSED`, 정정, 취소 픽스처의 `scheme` 수정 |
 | 5 | LOCKED의 `origin` | `INDEPENDENT`만 허용, 그 외 `EVENT_MALFORMED` | 같음 (§2.3). 문서의 일반 `origin` 서술을 고쳤다 | 같음 | 없음. L-54 |
 | 6 | R10/R12/R15 BIND-1 정정 | `BID_WITHDRAWN`: 대상이 `BIND_1`이고 `bidId` 일치가 아니면 `LEDGER_ANNUL_TARGET_INVALID`. 그 밖의 `reason`에서 대상이 `BIND_1`이면 `LEDGER_ANNUL_BOUND_TO_BID`. `BID_WITHDRAWN`은 공동 서명 0건, 그 외 정확히 1건 | 같음, 판정표 (§4.2.1), `bidId`는 바인딩 ID (§7). 문서의 "활성 입찰이 있는 동안" 표현을 불변식으로 정리 | 같음 (문서가 구현을 따름) | 없음. L-55~L-60 |
 | 7 | 미지원 이벤트 3종 | 세 유형 모두 `EVENT_TYPE_NOT_SUPPORTED`로 거부, 형태는 검사하지 않음. `ipoId`는 모든 유형에서 필수 | 사양 확정 (§2.3.1~§2.3.3, R17~R19). `MANAGER_KEY_REVOKED`만 `ipoId = null` | 구현 전 | 후속 PR에서 구현 (L-62~L-76). 파서의 `ipoId`는 이 유형에서만 `null` 허용 |
-| 8 | PR #40(`55b400c`)의 `scheme` 이름 | `EIP712_OPERATOR_ACTION_V1`, `EIP712_ANNULMENT_APPROVAL_V1` (`LEDGER_` 없음). `EIP712_LEDGER_ACTION_V1`, `EIP712_LEDGER_ANNULMENT_V1`은 같음 | `EIP712_LEDGER_OPERATOR_ACTION_V1`, `EIP712_LEDGER_ANNULMENT_APPROVAL_V1` | **다름** (S-2 ①) | 상수 2개 이름 변경(아래 S-2) |
-| 9 | PR #40의 서명 hex | 대소문자 모두 허용, 테스트(`ledger-auth.test.ts:128`)가 대문자를 "같은 서명"으로 취급 | 소문자만 | **다름** (S-2 ②) | 정규식과 해당 테스트 교체 |
-| 10 | PR #40의 `OperatorAction` | `{action, ipoId, requestNonce, expiresAt}` | `{actorId, action, ipoId, payloadDigest, requestNonce, expiresAt}` | **다름** (S-2 ③) | 필드 2개 추가 |
+| 8 | PR #40의 `scheme` 이름 | `55b400c`: `EIP712_OPERATOR_ACTION_V1`, `EIP712_ANNULMENT_APPROVAL_V1`(`LEDGER_` 없음). **`8c632c2`에서 이미 설계 이름으로 변경됨** | `EIP712_LEDGER_OPERATOR_ACTION_V1`, `EIP712_LEDGER_ANNULMENT_APPROVAL_V1` | `55b400c`에서는 다름(S-2 ①), `8c632c2`에서 같음 | 없음(확인만) |
+| 9 | PR #40의 서명 hex | `55b400c`: 대소문자 허용, 테스트(`ledger-auth.test.ts:128`)가 대문자를 "같은 서명"으로 취급. **`8c632c2`의 `events.ts`는 소문자만(`/^0x[0-9a-f]{130}$/`)** | 소문자만 | `55b400c`에서는 다름(S-2 ②), `8c632c2`에서 같음 | 없음(확인만) |
+| 10 | PR #40의 `OperatorAction` | `55b400c`: `{action, ipoId, requestNonce, expiresAt}`. **`8c632c2`: `actorId`, `payloadDigest` 추가**(`payloadDigest = sha256(canonicalJson({domain: "ipo-proof/ledger-operator-payload/v1", payload}))`, `IPO_CLOSED`는 `{closesAt}`) | `{actorId, action, ipoId, payloadDigest, requestNonce, expiresAt}` | `55b400c`에서는 다름(S-2 ③), `8c632c2`에서 같음 | 없음(확인만) |
 | 11 | 대체 이벤트의 `authorization` | 정정의 `authorization`을 복사 | 같음. 단 "직전 `EVENT_ANNULLED`의 `authorization` 승계"를 명시하고, 검증 규칙(`LEDGER_ANNUL_REPLACEMENT_MISSING`)과 §2.2.2 예외로 정함 | 같음(문서가 구현을 따름) | 승계 검증 테스트(L-78) |
 | 12 | reason code 6개 | 임시 이름 | 이름 그대로 확정(§4.2.2). `LEDGER_SCHEME_MISMATCH`는 폐기 | 같음 | 없음 |
+| 14 | PR #40 `8c632c2`의 보안QA 반영분 | `IPO_WINDOW_ELAPSED`(R6b, grace 없음), 도메인 거부 요청의 nonce 소비와 결과 캐시(R4), `maxRequestTtlMs` 필수 설정과 `LEDGER_REQUEST_TTL_EXCEEDED`(R3), `ledgerId` 필수와 `salt`(S-3), `events()` 동결·`#private`(B-1) | 같음(설정 이름만 다름: 문서 `maxTtl` ↔ 구현 `maxRequestTtlMs`) | 같음 | 없음. nonce 영속·체인 재구성은 아직 인메모리(남은 구현) |
 | 13 | `registrySeq`, `closesAt` | 정확 일치 | 같음(R5, R8) | 같음 | 없음 |
 
-**S-2 확정(보안QA의 불일치 3건, 이 문서가 하나로 정함).** "확정"은 설계 문서 안의 확정이다.
+**S-2 확정(보안QA의 불일치 3건, 이 문서가 하나로 정함).** "확정"은 설계 문서 안의 확정이다. 이 문서가 확정하기 전에 PR #40의 후속 커밋 `8c632c2`가 세 건 모두 이 문서의 쪽으로 이미 맞춰 놓은 것을 확인했다(첫 커밋 `e0f7408`의 내용을 읽은 것으로 보임). 근거를 문서에 남기는 것이 이 표의 역할이다.
 
 | 항목 | 확정 | 근거 |
 | --- | --- | --- |
-| ① `scheme` 이름 | **이 문서의 이름이 맞다**: `EIP712_LEDGER_OPERATOR_ACTION_V1`, `EIP712_LEDGER_ANNULMENT_APPROVAL_V1`. 구현의 두 상수를 바꾼다 | 이름 규칙 `EIP712_LEDGER_<의미>_V<n>`이 여섯 스킴 전체에서 일관되고(§2.2.2), 어테스터 증빙의 스킴(`EIP712_…` 계열, #11)과 `LEDGER_` 접두사로 구분된다. 승인자 이름은 PR #35 픽스처가 이미 `EIP712_LEDGER_ANNULMENT_APPROVAL_V1`을 썼다. 바꿀 상수가 2개이고 구현만 바꾸면 되어 비용이 작다 |
+| ① `scheme` 이름 | **이 문서의 이름이 맞다**: `EIP712_LEDGER_OPERATOR_ACTION_V1`, `EIP712_LEDGER_ANNULMENT_APPROVAL_V1`(`55b400c`의 두 상수를 바꿔야 했고 `8c632c2`에서 바뀜) | 이름 규칙 `EIP712_LEDGER_<의미>_V<n>`이 여섯 스킴 전체에서 일관되고(§2.2.2), 어테스터 증빙의 스킴(`EIP712_…` 계열, #11)과 `LEDGER_` 접두사로 구분된다. 승인자 이름은 PR #35 픽스처가 이미 `EIP712_LEDGER_ANNULMENT_APPROVAL_V1`을 썼다. 바꿀 상수가 2개이고 구현만 바꾸면 되어 비용이 작다 |
 | ② 서명 hex | **소문자만** (`/^0x[0-9a-f]{130}$/`). 대문자 입력은 거부 | 서명 문자열은 이벤트에 그대로 들어가 `eventHash`의 입력이 된다. 대소문자만 다른 두 표기는 서로 다른 `eventHash`를 만든다(보안QA가 확인). 하나로 고정하지 않으면 같은 서명이 서로 다른 이벤트로 체인에 들어가고 §2.2.1의 "정규화 없음" 원칙과 충돌한다 |
 | ③ `OperatorAction` | **`{actorId, action, ipoId, payloadDigest, requestNonce, expiresAt}`**. `payloadDigest`는 유형별 payload(`IPO_CLOSED`는 `P = {closesAt}`)의 해시(§3.2) | 서명이 "무엇에 대해"를 덮어야 한다(서명 대상 바인딩). `IPO_FINALIZED`, `FINDING_ANNOTATED`가 추가되면 payload를 서명이 덮지 않는 것이 취약점이다. `actorId`는 서명자와 주체의 결합이며 `LedgerAction`, `LedgerAnnulment`와 일관된다. 지금 `IPO_CLOSED`만 있어 비용이 가장 작다 |
 
@@ -922,8 +924,8 @@ PR #35는 설계가 정하지 않은 항목을 임시값으로 두었다. 아래
 | --- | --- |
 | 구현 봇 (#15 등) | 이벤트 봉투와 해시 체인, 서명된 요청 검증(#11의 서명 유틸 재사용, v1 규칙 그대로), 이벤트 접기(fold)로 유효 상태 도출과 `getStateAt`, `IPO_CLOSED`/`IPO_FINALIZED`, **`EVENT_ANNULLED`와 공동 서명 검증(R10~R13), 승인자 독립성 검사 R14(I1~I5, `PRINCIPAL_KEY_REUSE`, 설정 시 `LEDGER_ANNUL_DISABLED`), 입찰 취소 경로 R15(`BidWithdrawal` 서명, `afterState`, 입찰 저장소 연동), 정정+재기록 원자 처리**, `payload.origin` 구분, 거부 로그, BIND-1, §8 시나리오(L-01~L-46) 테스트. 이 PR은 구현을 포함하지 않음 |
 | 보안QA | 이 문서 §4, §6의 권한 모델 리뷰(#14 리뷰 항목), 이번 반영분(S-1~S-8 처리 현황은 PR #38 본문)의 재검토, 새 위협 T-24~T-26 검토, `THREAT_MODEL.md`에 "`IPO_FINALIZED` 이후에도 주석·폐기 가능" 한 줄 추가(보안QA 담당 규칙), 정정 도입에 따른 새 공격면(T-12~T-17)과 확정값 반영분(T-18~T-23: 전역 키 폐기, 주석 남용, 확정 위조, `scheme` 라벨, 독립 선언+입찰 정정, 직렬화 불일치), 독립성 검사(R14)의 우회 가능성과 최초 설정 신뢰(T-16), 입찰 취소 반복(T-17)과 §6.4 단일 운영자 한계 검토, Q14-N3(`IPO_CLOSED` 지연) 판단, `THREAT_MODEL.md`의 "Unauthorized state transition" 행 갱신(보안QA 담당 규칙) |
-| 구현 봇 (PR #40 수정, S-2 확정 반영) | ① `scheme` 상수 2개 이름 변경(`EIP712_LEDGER_OPERATOR_ACTION_V1`, `EIP712_LEDGER_ANNULMENT_APPROVAL_V1`), ② 서명 hex를 소문자만 허용하고 대문자 테스트를 "거부"로 교체, ③ `OperatorAction`에 `actorId`·`payloadDigest` 추가, ④ 대체 이벤트의 `authorization` 승계와 검증(`LEDGER_ANNUL_REPLACEMENT_MISSING`), ⑤ `BID_WITHDRAWN` 이벤트 payload에 `withdrawnBidId` 추가(R15), ⑥ `events()` 반환값 방어 복사·`config` 은닉(PR #40 보안QA B-1, #40 소관). 신규 reason code 6개는 이름 그대로 확정(§4.2.2) |
-| 구현 봇 (원장 PR ② 이후, 확정값 반영) | ⓪ genesis 해시와 서명 도메인 `salt`, `expectedHead`/체크포인트(§2.5), `recordedAt` 비감소(§2.2.3), R6b(`IPO_WINDOW_ELAPSED`), R3 `maxTtl`, R4 nonce 소비·영속·격리(§4.7), R20 `REGISTRY_KEY_CHANGED`와 폐기 의미(§4.6, I6), R15 설정형 제한(설정이 있을 때만), `FINDING_ANNOTATED` 개수 상한(설정 시). ① `scheme` 유형별 대응 검사(`LEDGER_AUTH_SCHEME_MISMATCH`)와 픽스처 `scheme` 수정(§9.4 #2, #4). ② 참조 벡터(§2.2.1)와 genesis 값 테스트(L-47~L-51, L-96). ③ `FINDING_ANNOTATED`, `MANAGER_KEY_REVOKED`(`ipoId = null`, 전역 폐기 집합), `IPO_FINALIZED`(선행·컷오프 일치·1회)의 파서와 접기 구현, 기존 `EVENT_TYPE_NOT_SUPPORTED` 테스트 교체(L-62~L-76). ④ `OperatorAction.payloadDigest`와 `KeyRevocation` 서명 구조를 서명 검증 PR에 포함. ⑤ 서명 검증 PR에서 `primaryType`을 `scheme`이 아니라 이벤트 유형·`reason`으로 선택. 이 PR은 구현을 포함하지 않음 |
+| 구현 봇 (PR #40 수정, S-2 확정 반영) | `8c632c2`에서 **이미 반영된 것으로 확인**: `scheme` 상수 2개 이름, 서명 hex 소문자, `OperatorAction`의 `actorId`·`payloadDigest`, R6b, R3 TTL, R4 도메인 거부의 nonce 소비, `ledgerId` genesis와 `salt`, `events()` 동결(B-1). **남은 것**: ① genesis의 입력 확인(`ledgerId`만, 이 문서가 구현에 맞춤. 참조 벡터 §2.2.1로 테스트), ② 대체 이벤트의 `authorization` 승계를 체인 검증이 확인(`LEDGER_ANNUL_REPLACEMENT_MISSING`, L-78), ③ nonce 소비 기록의 영속·체인 재구성(L-92, L-93), ④ `recordedAt` 비감소(L-95), ⑤ `BID_WITHDRAWN`의 `withdrawnBidId`는 R15 구현 PR에서. 신규 reason code 6개는 이름 그대로 확정(§4.2.2) |
+| 구현 봇 (원장 PR ② 이후, 확정값 반영) | ⓪ `expectedHead`/체크포인트(§2.5), nonce 영속·격리(§4.7), R20 `REGISTRY_KEY_CHANGED`와 폐기 의미(§4.6, I6), R15 설정형 제한(설정이 있을 때만), `FINDING_ANNOTATED` 개수 상한(설정 시). ① `scheme` 유형별 대응 검사(`LEDGER_AUTH_SCHEME_MISMATCH`)와 픽스처 `scheme` 수정(§9.4 #2, #4). ② 참조 벡터(§2.2.1)와 genesis 값 테스트(L-47~L-51, L-96). ③ `FINDING_ANNOTATED`, `MANAGER_KEY_REVOKED`(`ipoId = null`, 전역 폐기 집합), `IPO_FINALIZED`(선행·컷오프 일치·1회)의 파서와 접기 구현, 기존 `EVENT_TYPE_NOT_SUPPORTED` 테스트 교체(L-62~L-76). ④ `OperatorAction.payloadDigest`와 `KeyRevocation` 서명 구조를 서명 검증 PR에 포함. ⑤ 서명 검증 PR에서 `primaryType`을 `scheme`이 아니라 이벤트 유형·`reason`으로 선택. 이 PR은 구현을 포함하지 않음 |
 | 리서치 | #11 서명 스키마(별도 PR), #13 키 관리·쿼럼(D14-Q1 연동. 이 문서의 R20 확인자 구성은 #13의 일반 쿼럼 모델이 정해지면 그것으로 대체할 수 있다. 2026-10-04 시점에 #13 문서·PR 없음), #18 온체인 설계. #10 문서 §3.7 C4 한 문장과 F1/E-13/S-06/Q10-N5 갱신은 이 PR에 포함함 |
 | 소유자(진영) | 반영된 결정 확인(Q14-N1, N4 해소, N3은 R6b로 설계 결정). 남은 열린 질문 Q14-N2(취소 횟수 상한·마감 직전 구간, 값 결정), N5, N6, **N7~N10**(리드 봇이 확인 중), **N11~N13**(§9.3, 각 기본값 있음) |
 | 리드 봇 | `ROADMAP.md` 미결정 항목(입찰 통과와 기록의 결합)과 `THREAT_MODEL.md`의 관련 서술 정리, P14-Axx의 ASSUMPTIONS 편입 여부 |
