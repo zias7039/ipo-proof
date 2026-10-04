@@ -29,24 +29,16 @@ export const LEDGER_SCHEMA_VERSION = 1;
 /** Domain tag mixed into every event hash (design §2.2). */
 export const LEDGER_EVENT_HASH_DOMAIN = "ipo-proof/ledger-event/v1";
 
-/**
- * `prevHash` of the event with seq = 1. The design says "fixed genesis value" without naming it
- * (open question); 64 zero hex digits is a placeholder that only has to be a constant.
- */
-export const LEDGER_GENESIS_PREV_HASH = "0".repeat(64);
-
 /** Domain tag of the ledger-specific genesis value (M-3). */
 export const LEDGER_GENESIS_DOMAIN = "ipo-proof/ledger-genesis/v1";
 
 /**
- * The `prevHash` of seq = 1. Without a `ledgerId` it is the constant placeholder above (the low-level
- * `HashChainedLedger` default, kept as confirmed). With a `ledgerId` it is
- * `sha256(canonicalJson({domain: "ipo-proof/ledger-genesis/v1", ledgerId}))`, so two ledgers
- * (staging / production / per IPO) never share a genesis and a chain cannot be replayed into
- * another ledger. Returns `undefined` for an id that is not a synthetic identifier.
+ * The `prevHash` of seq = 1: `sha256(canonicalJson({domain: "ipo-proof/ledger-genesis/v1", ledgerId}))`,
+ * so two ledgers (staging / production / per IPO) never share a genesis and a chain cannot be replayed
+ * into another ledger. `ledgerId` is REQUIRED (there is no placeholder genesis any more: security QA L-B).
+ * Returns `undefined` for anything that is not a synthetic identifier.
  */
-export function ledgerGenesisHash(ledgerId: string | undefined): string | undefined {
-  if (ledgerId === undefined) return LEDGER_GENESIS_PREV_HASH;
+export function ledgerGenesisHash(ledgerId: string): string | undefined {
   if (!isSyntheticId(ledgerId)) return undefined;
   return sha256CanonicalHex({ domain: LEDGER_GENESIS_DOMAIN, ledgerId });
 }

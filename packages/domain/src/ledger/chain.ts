@@ -39,6 +39,8 @@ export const ChainRejection = {
    * chain was rebuilt with a rewound clock. Refused when appending and when verifying.
    */
   LEDGER_CLOCK_REGRESSION: "LEDGER_CLOCK_REGRESSION",
+  /** `verifyChain` was called without a `ledgerId` (L-B): a chain is only meaningful as the log of a named ledger. */
+  LEDGER_ID_REQUIRED: "LEDGER_ID_REQUIRED",
 } as const;
 export type ChainRejection = (typeof ChainRejection)[keyof typeof ChainRejection];
 
@@ -47,12 +49,6 @@ export type ChainVerification =
       readonly ok: true;
       readonly length: number;
       readonly headHash: string;
-      /**
-       * True only if the chain was verified against a `ledgerId` (its genesis hash). False means it was
-       * checked against the placeholder genesis only (N-5): internally consistent, but not shown to
-       * belong to any particular ledger instance, so do not treat it as the verified log of a ledger.
-       */
-      readonly ledgerBound: boolean;
     }
   /** `seq` is the 1-based position of the first inconsistent event (the position it should have), not necessarily its own `seq` field. */
   | { readonly ok: false; readonly seq: number; readonly reasonCode: ChainRejection };
@@ -65,13 +61,21 @@ export interface ChainOptions {
   /**
    * Identifier of the ledger the chain belongs to (M-3). It selects the genesis `prevHash`
    * (`ledgerGenesisHash`); a chain built for another ledger id fails at position 1 with
-   * LEDGER_PREV_HASH_MISMATCH. Omitted: the constant placeholder genesis (low-level default).
+   * LEDGER_PREV_HASH_MISMATCH. REQUIRED (L-B): there is no placeholder genesis, so a verified chain is
+   * always shown to belong to the ledger the caller named. A missing id is LEDGER_ID_REQUIRED.
    */
-  readonly ledgerId?: string;
+  readonly ledgerId: string;
 }
 
-export function verifyChain(events: readonly unknown[], options: ChainOptions = {}): ChainVerification {
-  const genesis = ledgerGenesisHash(options.ledgerId);
+export function verifyChain(events: readonly unknown[], options: ChainOptions): ChainVerification {
+  let ledgerId: unknown;
+  try {
+    ledgerId = (options as ChainOptions | undefined)?.ledgerId; // read once; untyped callers may pass anything
+  } catch {
+    ledgerId = undefined;
+  }
+  if (ledgerId === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_ID_REQUIRED };
+  const genesis = ledgerGenesisHash(ledgerId as string);
   if (genesis === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_PREV_HASH_MISMATCH };
   const projection = new LedgerProjection();
   let prevHash = genesis;
@@ -96,7 +100,7 @@ export function verifyChain(events: readonly unknown[], options: ChainOptions = 
   if (projection.hasPendingReplacement()) {
     return { ok: false, seq: events.length, reasonCode: ChainRejection.LEDGER_ANNUL_REPLACEMENT_MISSING };
   }
-  return { ok: true, length: events.length, headHash: prevHash, ledgerBound: options.ledgerId !== undefined };
+  return { ok: true, length: events.length, headHash: prevHash };
 }
 
 export type AppendResult =
@@ -119,8 +123,8 @@ export class HashChainedLedger implements ParticipationLookup {
   readonly #now: () => number;
   readonly #genesis: string;
 
-  /** Throws `TypeError` for an invalid `ledgerId` (deployment configuration, not attacker input). */
-  constructor(now: () => number, options: ChainOptions = {}) {
+  /** Throws `TypeError` for a missing or invalid `ledgerId` (deployment configuration, not attacker input). */
+  constructor(now: () => number, options: ChainOptions) {
     const genesis = ledgerGenesisHash(options.ledgerId);
     if (genesis === undefined) throw new TypeError("ledgerId must be a synthetic identifier");
     this.#now = now;
@@ -131,7 +135,7 @@ export class HashChainedLedger implements ParticipationLookup {
   static fromEvents(
     events: readonly unknown[],
     now: () => number,
-    options: ChainOptions = {},
+    options: ChainOptions,
   ): { readonly ok: true; readonly ledger: HashChainedLedger } | { readonly ok: false; readonly seq: number; readonly reasonCode: ChainRejection } {
     const verified = verifyChain(events, options);
     if (!verified.ok) return verified;
@@ -217,3 +221,7 @@ export class HashChainedLedger implements ParticipationLookup {
     return this.#chain[this.#chain.length - 1]?.eventHash ?? this.#genesis;
   }
 }
+
+// L-A: same hardening as AuthorizedLedger (the low-level chain is not exported from the barrel).
+Object.freeze(HashChainedLedger.prototype);
+Object.freeze(HashChainedLedger);
