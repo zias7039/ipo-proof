@@ -12,7 +12,9 @@ import { toHighS, withV, syntheticAccount } from "./signing.js";
 import {
   CLOSES_AT,
   LEDGER_TEST_DOMAIN,
+  LEDGER_TEST_ID,
   PRINCIPALS,
+  TEST_MAX_TTL_MS,
   annulDraft,
   closeDraft,
   makeAuthWorld,
@@ -38,7 +40,7 @@ describe("L-01: a registered manager records its own fund with a valid signature
     const [e] = w.ledger.events();
     expect(e).toMatchObject({ seq: 1, actorId: "manager_x", eventType: "PARTICIPATION_RECORDED", recordedAt: NOW });
     expect(e?.authorization).toEqual((draft as { authorization: unknown }).authorization);
-    expect(verifyChain(plain(w.ledger.events())).ok).toBe(true);
+    expect(verifyChain(plain(w.ledger.events()), { ledgerId: LEDGER_TEST_ID }).ok).toBe(true);
     expect(await sub(w, await recordDraft({ fund: "fund_z", nonce: "req_2", state: "NON_PARTICIPATION_LOCKED" }))).toMatchObject({ ok: true });
     expect(w.ledger.getState("fund_z", "ipo_1")).toBe("NON_PARTICIPATION_LOCKED");
   });
@@ -125,17 +127,24 @@ describe("authentication: signature forgery, tampering and replay across context
     expect(w.ledger.events().length).toBe(0);
   });
 
-  it("an upper-case hex signature of the same bytes is the same signature", async () => {
+  it("signatures are lowercase hex only: an upper-case or mixed-case form of valid bytes is malformed, so one signature gives one eventHash (design #38 2.2.1, QA L-1)", async () => {
     const w = makeAuthWorld();
     const d = (await recordDraft()) as { authorization: { signature: string } };
-    const upper = `0x${d.authorization.signature.slice(2).toUpperCase()}`;
-    expect(sub(w, { ...d, authorization: { ...d.authorization, signature: upper } })).toMatchObject({ ok: true });
+    const body = d.authorization.signature.slice(2);
+    for (const signature of [`0x${body.toUpperCase()}`, `0x${body.slice(0, 64)}${body.slice(64).toUpperCase()}`, `0X${body}`]) {
+      expect(sub(w, { ...d, authorization: { ...d.authorization, signature } }), signature.slice(0, 12)).toEqual(rej("EVENT_MALFORMED"));
+    }
+    expect(w.ledger.events().length).toBe(0);
+    expect(sub(w, d)).toMatchObject({ ok: true });
   });
 
   it("authorization.scheme must match the event type", async () => {
     const w = makeAuthWorld();
-    expect(sub(w, await recordDraft({ scheme: "EIP712_LEDGER_ANNULMENT_V1" }))).toEqual(rej("LEDGER_AUTH_SCHEME_MISMATCH"));
-    expect(sub(w, await recordDraft({ scheme: "EIP712_OPERATOR_ACTION_V1" }))).toEqual(rej("LEDGER_AUTH_SCHEME_MISMATCH"));
+    expect(sub(w, await recordDraft({ scheme: "EIP712_LEDGER_ANNULMENT_V1" }))).toEqual(rej("LEDGER_SCHEME_MISMATCH"));
+    expect(sub(w, await recordDraft({ scheme: "EIP712_LEDGER_OPERATOR_ACTION_V1" }))).toEqual(rej("LEDGER_SCHEME_MISMATCH"));
+    // the provisional names of PR #40 (without LEDGER_) are no longer valid anywhere
+    expect(sub(w, await recordDraft({ scheme: "EIP712_OPERATOR_ACTION_V1" }))).toEqual(rej("LEDGER_SCHEME_MISMATCH"));
+    expect(w.ledger.events().length).toBe(0);
   });
 });
 
@@ -162,8 +171,8 @@ describe("R3 expiry, R4 nonce / idempotency (L-04, L-05, L-08, L-26)", () => {
 
   it("the same nonce with different content is a replay: LEDGER_NONCE_REPLAY (L-05)", async () => {
     const w = makeAuthWorld();
-    mustSubmit(w.ledger, await recordDraft());
-    const other = await recordDraft({ fund: "fund_z", state: "NON_PARTICIPATION_LOCKED" }); // same nonce req_1
+    mustSubmit(w.ledger, await recordDraft({ nonce: "req_1" }));
+    const other = await recordDraft({ nonce: "req_1", fund: "fund_z", state: "NON_PARTICIPATION_LOCKED" }); // same nonce
     expect(sub(w, other)).toEqual(rej("LEDGER_NONCE_REPLAY"));
     expect(w.ledger.events().length).toBe(1);
   });
@@ -174,11 +183,56 @@ describe("R3 expiry, R4 nonce / idempotency (L-04, L-05, L-08, L-26)", () => {
     expect(sub(w, await recordDraft({ actor: "manager_y", fund: "fund_y", nonce: "shared" }))).toMatchObject({ ok: true });
   });
 
-  it("a rejected request does not consume its nonce", async () => {
+  it("M-1: a request rejected by the domain rules also consumes its nonce; re-sending it after the state changed does not revive it", async () => {
     const w = makeAuthWorld();
-    mustSubmit(w.ledger, await recordDraft({ nonce: "a" }));
-    expect(sub(w, await recordDraft({ nonce: "b", state: "NON_PARTICIPATION_LOCKED" }))).toEqual(rej("PARTICIPATION_ALREADY_RECORDED"));
-    expect(sub(w, await recordDraft({ nonce: "b", fund: "fund_z" }))).toMatchObject({ ok: true });
+    const [p] = mustSubmit(w.ledger, await recordDraft({ nonce: "a" }));
+    // fund_x is PARTICIPATING; a signed LOCKED request is rejected by the transition rules.
+    const locked = await recordDraft({ nonce: "b", state: "NON_PARTICIPATION_LOCKED" });
+    expect(sub(w, locked)).toEqual(rej("PARTICIPATION_ALREADY_RECORDED"));
+    // The manager corrects the PARTICIPATING record: the fund is UNKNOWN again.
+    mustSubmit(w.ledger, await annulDraft(def(p), { nonce: "annul_a", approvalNonce: "ap_a" }));
+    expect(w.ledger.getState("fund_x", "ipo_1")).toBe("UNKNOWN");
+    // The old signed LOCKED request would now be valid by the rules. It must stay rejected: the SAME signed request returns its original rejection...
+    expect(sub(w, locked)).toEqual(rej("PARTICIPATION_ALREADY_RECORDED"));
+    expect(w.ledger.getState("fund_x", "ipo_1")).toBe("UNKNOWN");
+    // ...and a different request on that nonce is a replay. A fresh signature with a fresh nonce works.
+    expect(sub(w, await recordDraft({ nonce: "b", state: "NON_PARTICIPATION_LOCKED", expiresAt: NOW + 5_000 }))).toEqual(rej("LEDGER_NONCE_REPLAY"));
+    expect(sub(w, await recordDraft({ nonce: "c", state: "NON_PARTICIPATION_LOCKED" }))).toMatchObject({ ok: true });
+  });
+
+  it("M-1: every post-authentication rejection consumes the nonce (authorization and close-time rejections included)", async () => {
+    const w = makeAuthWorld();
+    const notMine = await recordDraft({ actor: "manager_x", fund: "fund_y", nonce: "n1" });
+    expect(sub(w, notMine)).toEqual(rej("LEDGER_ACTOR_NOT_FUND_MANAGER"));
+    expect(sub(w, { ...(notMine as object), payload: { from: "UNKNOWN", to: "PARTICIPATING", origin: "INDEPENDENT" }, requestedAt: NOW + 1 })).toEqual(rej("LEDGER_ACTOR_NOT_FUND_MANAGER")); // same signed content -> original result
+    const early = await closeDraft({ nonce: "c1", ledgerSeqAtClose: 0 });
+    expect(sub(w, early)).toEqual(rej("IPO_NOT_YET_CLOSABLE"));
+    w.clock.t = CLOSES_AT;
+    expect(sub(w, early)).toEqual(rej("IPO_NOT_YET_CLOSABLE")); // still the original rejection, not re-evaluated
+    expect(sub(w, await closeDraft({ nonce: "c2", ledgerSeqAtClose: 0 }))).toMatchObject({ ok: true });
+  });
+
+  it("M-1: rejections BEFORE the signature is established do not consume a nonce (nobody can burn another principal's nonces)", async () => {
+    const w = makeAuthWorld();
+    expect(sub(w, await recordDraft({ nonce: "x1", signer: "stranger_key" }))).toEqual(rej("LEDGER_SIGNATURE_INVALID"));
+    expect(sub(w, await recordDraft({ nonce: "x1", expiresAt: NOW }))).toEqual(rej("LEDGER_REQUEST_EXPIRED"));
+    expect(sub(w, await recordDraft({ nonce: "x1", registrySeq: 9 }))).toEqual(rej("LEDGER_REGISTRY_SEQ_MISMATCH"));
+    expect(sub(w, await recordDraft({ nonce: "x1" }))).toMatchObject({ ok: true });
+  });
+
+  it("M-1: a maximum request lifetime applies; expiresAt = MAX_SAFE_INTEGER is refused", async () => {
+    const w = makeAuthWorld();
+    expect(sub(w, await recordDraft({ nonce: "t1", expiresAt: Number.MAX_SAFE_INTEGER }))).toEqual(rej("LEDGER_REQUEST_TTL_EXCEEDED"));
+    expect(sub(w, await recordDraft({ nonce: "t2", expiresAt: NOW + TEST_MAX_TTL_MS + 1 }))).toEqual(rej("LEDGER_REQUEST_TTL_EXCEEDED"));
+    expect(sub(w, await recordDraft({ nonce: "t3", expiresAt: NOW + TEST_MAX_TTL_MS }))).toMatchObject({ ok: true });
+    expect(w.ledger.events().length).toBe(1);
+  });
+
+  it("M-1: the approval's own lifetime is bounded too", async () => {
+    const w = makeAuthWorld();
+    const [p] = mustSubmit(w.ledger, await recordDraft({ nonce: "a" }));
+    expect(sub(w, await annulDraft(def(p), { nonce: "an1", approvalNonce: "ap1", approvalExpiresAt: Number.MAX_SAFE_INTEGER }))).toEqual(rej("LEDGER_REQUEST_TTL_EXCEEDED"));
+    expect(w.ledger.events().length).toBe(1);
   });
 
   it("an expired resend is expired, not idempotent (R3 before R4)", async () => {
@@ -294,7 +348,7 @@ describe("R10: corrections need the manager's LedgerAnnulment AND an independent
     expect(w.ledger.getStateAt("fund_x", "ipo_1", 1)).toBe("PARTICIPATING");
     expect(w.ledger.getStateAt("fund_x", "ipo_1", 2)).toBe("UNKNOWN");
     expect(w.ledger.events()[0]).toBe(p);
-    expect(verifyChain(plain(w.ledger.events()))).toMatchObject({ ok: true, length: 2 });
+    expect(verifyChain(plain(w.ledger.events()), { ledgerId: LEDGER_TEST_ID })).toMatchObject({ ok: true, length: 2 });
   });
 
   it("L-23: manager signature without an approver -> LEDGER_ANNUL_COSIGN_REQUIRED, ledger unchanged", async () => {
@@ -338,7 +392,7 @@ describe("R10: corrections need the manager's LedgerAnnulment AND an independent
     const { w, p } = await withP();
     expect(sub(w, await annulDraft(p, { approverSigner: "stranger_key" }))).toEqual(rej("LEDGER_SIGNATURE_INVALID"));
     expect(sub(w, await annulDraft(p, { approver: "admin_ghost" }))).toEqual(rej("LEDGER_ACTOR_UNKNOWN"));
-    expect(sub(w, await annulDraft(p, { approvalScheme: "EIP712_LEDGER_ACTION_V1" }))).toEqual(rej("LEDGER_AUTH_SCHEME_MISMATCH"));
+    expect(sub(w, await annulDraft(p, { approvalScheme: "EIP712_LEDGER_ACTION_V1" }))).toEqual(rej("LEDGER_SCHEME_MISMATCH"));
     expect(sub(w, await annulDraft(p, { approvalExpiresAt: NOW }))).toEqual(rej("LEDGER_REQUEST_EXPIRED"));
     expect(w.ledger.events().length).toBe(1);
 
@@ -357,7 +411,7 @@ describe("R10: corrections need the manager's LedgerAnnulment AND an independent
 
   it("L-26: resending the same correction is idempotent; the same nonce with another target is a replay", async () => {
     const { w, p } = await withP();
-    const d = await annulDraft(p);
+    const d = await annulDraft(p, { nonce: "annul_1" });
     expect(sub(w, d)).toMatchObject({ ok: true, replayed: false });
     expect(sub(w, d)).toMatchObject({ ok: true, replayed: true });
     expect(w.ledger.events().length).toBe(2);
@@ -382,7 +436,7 @@ describe("R10: corrections need the manager's LedgerAnnulment AND an independent
     expect(w.ledger.getState("fund_x", "ipo_1")).toBe("NON_PARTICIPATION_LOCKED");
     expect(w.ledger.getStateAt("fund_x", "ipo_1", 2)).toBe("UNKNOWN");
     expect(w.ledger.events()[2]?.payload).toMatchObject({ origin: "INDEPENDENT", from: "UNKNOWN" });
-    expect(verifyChain(plain(w.ledger.events())).ok).toBe(true);
+    expect(verifyChain(plain(w.ledger.events()), { ledgerId: LEDGER_TEST_ID }).ok).toBe(true);
   });
 
   it("L-29: a replacement outside the allowed values rejects the whole request", async () => {
@@ -495,8 +549,12 @@ describe("fail closed: no throws, hostile input, bad configuration", () => {
 
   it("a throwing registry or a bad clock yields a rejection and changes nothing", async () => {
     const hostile = makeAuthWorld({ config: { funds: { getFund: () => { throw new Error("boom"); } } } });
-    expect(hostile.ledger.submit(await recordDraft())).toMatchObject({ ok: false });
+    const d = await recordDraft({ nonce: "h1" });
+    // L-3: an unexpected internal error has its own code (it used to be reported as EVENT_MALFORMED)
+    expect(hostile.ledger.submit(d)).toEqual(rej("LEDGER_INTERNAL_ERROR"));
     expect(hostile.ledger.events().length).toBe(0);
+    // a malformed request is still EVENT_MALFORMED, not an internal error
+    expect(hostile.ledger.submit({ nonsense: true })).toEqual(rej("EVENT_MALFORMED"));
     for (const t of [Number.NaN, -1, 1.5, Infinity]) {
       const w = makeAuthWorld({ start: t });
       expect(sub(w, await recordDraft())).toEqual(rej("LEDGER_CLOCK_INVALID"));
@@ -504,7 +562,7 @@ describe("fail closed: no throws, hostile input, bad configuration", () => {
   });
 
   it("invalid deployment configuration throws TypeError at construction (not attacker input)", () => {
-    const base = { now: () => NOW, domain: LEDGER_TEST_DOMAIN, principals: principals(), funds: { getFund: () => undefined }, ipos: { getIpo: () => undefined }, registrySeq: 1 };
+    const base = { now: () => NOW, domain: LEDGER_TEST_DOMAIN, principals: principals(), funds: { getFund: () => undefined }, ipos: { getIpo: () => undefined }, registrySeq: 1, ledgerId: LEDGER_TEST_ID, maxRequestTtlMs: TEST_MAX_TTL_MS };
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, name: "ipo-proof CapacityAttestation" } })).toThrow(TypeError);
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, version: "2" } })).toThrow(TypeError);
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, chainId: 0n } })).toThrow(TypeError);
@@ -516,7 +574,7 @@ describe("fail closed: no throws, hostile input, bad configuration", () => {
   it("determinism: the same signed requests and clock give the same chain", async () => {
     const run = async () => {
       const w = makeAuthWorld();
-      mustSubmit(w.ledger, await recordDraft());
+      mustSubmit(w.ledger, await recordDraft({ nonce: "r_1" }));
       mustSubmit(w.ledger, await recordDraft({ nonce: "r_2", fund: "fund_z", state: "NON_PARTICIPATION_LOCKED" }));
       return w.ledger.headHash();
     };
@@ -532,7 +590,7 @@ describe("fail closed: no throws, hostile input, bad configuration", () => {
   });
 
   it("signTyped round trip sanity: a principal signing for itself with its registered key is accepted", async () => {
-    expect(await signTyped("manager_x", "OperatorAction", { action: "x", ipoId: "ipo_1", requestNonce: "n", expiresAt: 1n })).toMatch(/^0x[0-9a-f]{130}$/);
+    expect(await signTyped("manager_x", "OperatorAction", { actorId: "operator_1", action: "x", ipoId: "ipo_1", payloadDigest: `0x${"00".repeat(32)}`, requestNonce: "n", expiresAt: 1n })).toMatch(/^0x[0-9a-f]{130}$/);
   });
 });
 

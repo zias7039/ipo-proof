@@ -8,7 +8,8 @@ import type { Eip712Domain } from "../src/eip712.js";
 import { AuthorizedLedger } from "../src/ledger/authorized.js";
 import type { LedgerEvent } from "../src/ledger/events.js";
 import type { AuthorizedLedgerConfig } from "../src/ledger/authorized.js";
-import { LEDGER_DOMAIN_NAME, LEDGER_DOMAIN_VERSION, LEDGER_EIP712_TYPES, LedgerScheme } from "../src/ledger/signing.js";
+import { ledgerGenesisHash } from "../src/ledger/events.js";
+import { LEDGER_DOMAIN_NAME, LEDGER_DOMAIN_VERSION, LEDGER_EIP712_TYPES, LedgerScheme, operatorPayloadDigest } from "../src/ledger/signing.js";
 import { PrincipalRole, createPrincipalRegistry } from "../src/ledger/principals.js";
 import type { PrincipalInput, PrincipalRegistry } from "../src/ledger/principals.js";
 import { InMemoryFundRegistry, InMemoryIpoRegistry } from "../src/registry.js";
@@ -23,6 +24,17 @@ export const LEDGER_TEST_DOMAIN: Eip712Domain = {
   chainId: 31337n,
   verifyingContract: `0x${"1".repeat(38)}ed`,
 };
+
+export const LEDGER_TEST_ID = "ledger_test";
+/** Longest accepted request lifetime in the test world: 14 days (FAR is 10 days ahead). */
+export const TEST_MAX_TTL_MS = 14 * 24 * HOUR;
+
+/** viem form of the ledger domain: the four domain fields plus `salt` = genesis hash of the ledger id (M-3). */
+export function ledgerViemDomain(domain: Eip712Domain, ledgerId: string = LEDGER_TEST_ID) {
+  const genesis = ledgerGenesisHash(ledgerId);
+  if (genesis === undefined) throw new Error("bad ledger id in fixture");
+  return { ...viemDomain(domain), salt: `0x${genesis}` as Hex };
+}
 
 export const CLOSES_AT = NOW + 24 * HOUR;
 export const FAR = NOW + 10 * 24 * HOUR;
@@ -68,6 +80,8 @@ export function makeAuthWorld(o: { principals?: PrincipalRegistry; config?: Part
       { ipoId: "ipo_2", subscriptionOpensAt: NOW - 24 * HOUR, subscriptionClosesAt: CLOSES_AT },
     ]),
     registrySeq: 1,
+    ledgerId: LEDGER_TEST_ID,
+    maxRequestTtlMs: TEST_MAX_TTL_MS,
     ...o.config,
   });
   return { ledger, clock };
@@ -79,9 +93,10 @@ export async function signTyped(
   primaryType: keyof typeof LEDGER_EIP712_TYPES,
   message: Record<string, unknown>,
   domain: Eip712Domain = LEDGER_TEST_DOMAIN,
+  ledgerId: string = LEDGER_TEST_ID,
 ): Promise<string> {
   return syntheticAccount(signer).signTypedData({
-    domain: viemDomain(domain),
+    domain: ledgerViemDomain(domain, ledgerId),
     types: { [primaryType]: LEDGER_EIP712_TYPES[primaryType] },
     primaryType,
     message,
@@ -89,9 +104,9 @@ export async function signTyped(
 }
 
 /** The EIP-712 digest (independent implementation) of a message. */
-export function viemDigest(primaryType: keyof typeof LEDGER_EIP712_TYPES, message: Record<string, unknown>, domain: Eip712Domain = LEDGER_TEST_DOMAIN): Hex {
+export function viemDigest(primaryType: keyof typeof LEDGER_EIP712_TYPES, message: Record<string, unknown>, domain: Eip712Domain = LEDGER_TEST_DOMAIN, ledgerId: string = LEDGER_TEST_ID): Hex {
   return hashTypedData({
-    domain: viemDomain(domain),
+    domain: ledgerViemDomain(domain, ledgerId),
     types: { [primaryType]: LEDGER_EIP712_TYPES[primaryType] },
     primaryType,
     message,
@@ -99,6 +114,14 @@ export function viemDigest(primaryType: keyof typeof LEDGER_EIP712_TYPES, messag
 }
 
 const big = (n: number): bigint => BigInt(n);
+
+/**
+ * Default nonces are unique per built request: a request rejected by the domain rules now consumes
+ * its nonce (M-1), so tests that send several requests must not share one by accident. Tests that
+ * need a shared or repeated nonce pass it explicitly.
+ */
+let nonceCounter = 0;
+const fresh = (prefix: string): string => `${prefix}_${++nonceCounter}`;
 
 export interface RecordOpts {
   actor?: string;
@@ -109,6 +132,8 @@ export interface RecordOpts {
   nonce?: string;
   expiresAt?: number;
   domain?: Eip712Domain;
+  /** Ledger id the signature is made for (default: the test ledger). */
+  ledgerId?: string;
   /** Values that are signed but NOT what is sent (to simulate tampering after signing). */
   signed?: Partial<{ actorId: string; fundId: string; ipoId: string; targetState: string; requestNonce: string; expiresAt: number }>;
   scheme?: string;
@@ -122,7 +147,7 @@ export async function recordDraft(o: RecordOpts = {}): Promise<Record<string, un
   const fund = o.fund ?? "fund_x";
   const ipo = o.ipo ?? "ipo_1";
   const state = o.state ?? "PARTICIPATING";
-  const nonce = o.nonce ?? "req_1";
+  const nonce = o.nonce ?? fresh("req");
   const expiresAt = o.expiresAt ?? FAR;
   const s = o.signed ?? {};
   const signature = await signTyped(
@@ -137,6 +162,7 @@ export async function recordDraft(o: RecordOpts = {}): Promise<Record<string, un
       expiresAt: big(s.expiresAt ?? expiresAt),
     },
     o.domain,
+    o.ledgerId,
   );
   return {
     eventType: state === "PARTICIPATING" ? "PARTICIPATION_RECORDED" : "NON_PARTICIPATION_LOCKED_RECORDED",
@@ -177,7 +203,7 @@ export async function annulDraft(target: { seq: number; eventHash: string }, o: 
   const actor = o.actor ?? "manager_x";
   const fund = o.fund ?? "fund_x";
   const ipo = o.ipo ?? "ipo_1";
-  const nonce = o.nonce ?? "annul_1";
+  const nonce = o.nonce ?? fresh("annul");
   const expiresAt = o.expiresAt ?? FAR;
   const replacement = o.replacement ?? null;
   const reason = o.reason ?? "MISTAKEN_ENTRY";
@@ -196,7 +222,7 @@ export async function annulDraft(target: { seq: number; eventHash: string }, o: 
   const approver = o.approver === undefined ? "admin_1" : o.approver;
   const coAuthorizations: unknown[] = [];
   if (approver !== null) {
-    const approvalNonce = o.approvalNonce ?? "approval_1";
+    const approvalNonce = o.approvalNonce ?? fresh("approval");
     const approvalExpiresAt = o.approvalExpiresAt ?? FAR;
     const approvalSignature = await signTyped(o.approverSigner ?? approver, "AnnulmentApproval", {
       approverId: approver,
@@ -225,14 +251,16 @@ export async function annulDraft(target: { seq: number; eventHash: string }, o: 
   };
 }
 
-export async function closeDraft(o: { actor?: string; signer?: string; ipo?: string; nonce?: string; closesAt?: number; ledgerSeqAtClose: number; signedIpo?: string; expiresAt?: number }): Promise<Record<string, unknown>> {
+export async function closeDraft(o: { actor?: string; signer?: string; ipo?: string; nonce?: string; closesAt?: number; ledgerSeqAtClose: number; signedIpo?: string; signedClosesAt?: number; signedActor?: string; expiresAt?: number }): Promise<Record<string, unknown>> {
   const actor = o.actor ?? "operator_1";
   const ipo = o.ipo ?? "ipo_1";
-  const nonce = o.nonce ?? "close_1";
+  const nonce = o.nonce ?? fresh("close");
   const expiresAt = o.expiresAt ?? FAR;
   const signature = await signTyped(o.signer ?? actor, "OperatorAction", {
+    actorId: o.signedActor ?? actor,
     action: "IPO_CLOSED",
     ipoId: o.signedIpo ?? ipo,
+    payloadDigest: operatorPayloadDigest({ closesAt: o.signedClosesAt ?? o.closesAt ?? CLOSES_AT }),
     requestNonce: nonce,
     expiresAt: big(expiresAt),
   });

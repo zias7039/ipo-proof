@@ -19,31 +19,47 @@
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   concat,
+  encodeAddress,
   encodeBytes32,
   encodeString,
   encodeUint256,
   typeHash,
 } from "../eip712-encoding.js";
-import { hashEip712Domain } from "../eip712.js";
 import type { Eip712Domain } from "../eip712.js";
+import { sha256CanonicalHex } from "../hash.js";
+import { ledgerGenesisHash } from "./events.js";
 
 export const LEDGER_DOMAIN_NAME = "ipo-proof ParticipationLedger";
 export const LEDGER_DOMAIN_VERSION = "1";
 
 /**
- * `authorization.scheme` values. The design fixes only the first two names; the operator and
- * approval names are this implementation's provisional choice (open question in the PR).
+ * `authorization.scheme` values, as in design PR #38 section 2.2.2 (R16). The other two schemes of
+ * that table (`EIP712_LEDGER_BID_WITHDRAWAL_V1`, `EIP712_LEDGER_KEY_REVOCATION_V1`) belong to R15 / R18,
+ * which this module does not implement, so they are not defined here.
  */
 export const LedgerScheme = {
   LEDGER_ACTION: "EIP712_LEDGER_ACTION_V1",
   LEDGER_ANNULMENT: "EIP712_LEDGER_ANNULMENT_V1",
-  ANNULMENT_APPROVAL: "EIP712_ANNULMENT_APPROVAL_V1",
-  OPERATOR_ACTION: "EIP712_OPERATOR_ACTION_V1",
+  ANNULMENT_APPROVAL: "EIP712_LEDGER_ANNULMENT_APPROVAL_V1",
+  OPERATOR_ACTION: "EIP712_LEDGER_OPERATOR_ACTION_V1",
 } as const;
 export type LedgerScheme = (typeof LedgerScheme)[keyof typeof LedgerScheme];
 
-/** The only operator action in this PR. */
+/** The only operator action this module signs for (IPO_FINALIZED / FINDING_ANNOTATED are not implemented). */
 export const OPERATOR_ACTION_IPO_CLOSED = "IPO_CLOSED";
+
+/** Domain tag of `OperatorAction.payloadDigest` (design #38 section 3.2). */
+export const LEDGER_OPERATOR_PAYLOAD_DOMAIN = "ipo-proof/ledger-operator-payload/v1";
+
+/**
+ * `payloadDigest` of an operator action: `sha256(canonicalJson({domain, payload}))` as lowercase
+ * 0x-hex (32 bytes). `payload` is the event payload WITHOUT the sequencer-filled fields, so for
+ * IPO_CLOSED it is `{closesAt}` (not `ledgerSeqAtClose`). It binds the signature to the payload:
+ * the same signature cannot be attached to a different payload.
+ */
+export function operatorPayloadDigest(payload: Record<string, unknown>): string {
+  return `0x${sha256CanonicalHex({ domain: LEDGER_OPERATOR_PAYLOAD_DOMAIN, payload })}`;
+}
 
 /** Standard JSON form of the types (used by tests to cross-check against an independent EIP-712 implementation). */
 export const LEDGER_EIP712_TYPES = {
@@ -73,8 +89,10 @@ export const LEDGER_EIP712_TYPES = {
     { name: "expiresAt", type: "uint256" },
   ],
   OperatorAction: [
+    { name: "actorId", type: "string" },
     { name: "action", type: "string" },
     { name: "ipoId", type: "string" },
+    { name: "payloadDigest", type: "bytes32" },
     { name: "requestNonce", type: "string" },
     { name: "expiresAt", type: "uint256" },
   ],
@@ -118,8 +136,12 @@ export interface AnnulmentApprovalMessage {
   readonly expiresAt: number;
 }
 export interface OperatorActionMessage {
+  /** Operator principalId. */
+  readonly actorId: string;
   readonly action: string;
   readonly ipoId: string;
+  /** `operatorPayloadDigest(...)`: lowercase 0x-prefixed 32-byte hex. */
+  readonly payloadDigest: string;
   readonly requestNonce: string;
   readonly expiresAt: number;
 }
@@ -173,8 +195,10 @@ export function hashOperatorAction(m: OperatorActionMessage): Uint8Array {
   return keccak_256(
     concat([
       typeHash(OPERATOR_ACTION_TYPE),
+      encodeString(m.actorId, "actorId"),
       encodeString(m.action, "action"),
       encodeString(m.ipoId, "ipoId"),
+      encodeBytes32(m.payloadDigest, "payloadDigest"),
       encodeString(m.requestNonce, "requestNonce"),
       encodeUint256(m.expiresAt, "expiresAt"),
     ]),
@@ -186,9 +210,28 @@ export function ledgerDigest(domainSeparator: Uint8Array, structHash: Uint8Array
   return keccak_256(concat([Uint8Array.of(0x19, 0x01), domainSeparator, structHash]));
 }
 
-/** The ledger EIP-712 domain separator for a deployment. */
-export function ledgerDomainSeparator(domain: Eip712Domain): Uint8Array {
-  return hashEip712Domain(domain);
+const LEDGER_DOMAIN_TYPE_STRING = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract,bytes32 salt)";
+
+/**
+ * The ledger EIP-712 domain separator for one ledger instance. Besides name / version / chainId /
+ * verifyingContract it carries the standard EIP-712 `salt` field = the ledger's genesis hash
+ * (`ledgerGenesisHash(ledgerId)`), so a signature made for one ledger instance (staging vs
+ * production, one IPO's ledger vs another) never verifies on another even if everything else in the
+ * domain is equal (M-3). Throws `Eip712EncodingError`/`TypeError` for invalid input (deployment configuration).
+ */
+export function ledgerDomainSeparator(domain: Eip712Domain, ledgerId: string): Uint8Array {
+  const genesis = ledgerGenesisHash(ledgerId);
+  if (genesis === undefined) throw new TypeError("ledgerId must be a synthetic identifier");
+  return keccak_256(
+    concat([
+      typeHash(LEDGER_DOMAIN_TYPE_STRING),
+      encodeString(domain.name, "domain.name"),
+      encodeString(domain.version, "domain.version"),
+      encodeUint256(domain.chainId, "domain.chainId"),
+      encodeAddress(domain.verifyingContract, "domain.verifyingContract"),
+      encodeBytes32(`0x${genesis}`, "domain.salt"),
+    ]),
+  );
 }
 
 /** Digest as the lowercase 0x hex string that `AnnulmentApprovalMessage.annulmentDigest` carries. */

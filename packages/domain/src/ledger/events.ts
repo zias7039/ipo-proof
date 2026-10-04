@@ -9,8 +9,9 @@
  *    hashed but their signatures are NOT verified here, and nobody is authorized by this module.
  *    Signature verification (EIP-712 LedgerAction, signing.ts) and the authorization rules live in
  *    AuthorizedLedger (authorized.ts), which is the write entry point for untrusted callers.
- *    HashChainedLedger itself stays low-level and unauthenticated: do not hand it to untrusted
- *    callers. Still missing: R9 (key revocation), R15 (bid withdrawal, needs a bid store), BIND-1
+ *    HashChainedLedger itself stays low-level and unauthenticated: it is NOT exported from the
+ *    package barrel (ledger/index.ts); only AuthorizedLedger is. The parse functions and
+ *    verifyChain here are read-only format/chain checks: they authenticate nobody. Still missing: R9 (key revocation), R15 (bid withdrawal, needs a bid store), BIND-1
  *    origins, a registry change log, a persistent nonce store, external checkpoints.
  *  - Events carry no amounts and no capacity (principle E). The payload of every event type is a
  *    closed allowlist: any extra field (for example an amount) makes the event malformed.
@@ -33,6 +34,22 @@ export const LEDGER_EVENT_HASH_DOMAIN = "ipo-proof/ledger-event/v1";
  * (open question); 64 zero hex digits is a placeholder that only has to be a constant.
  */
 export const LEDGER_GENESIS_PREV_HASH = "0".repeat(64);
+
+/** Domain tag of the ledger-specific genesis value (M-3). */
+export const LEDGER_GENESIS_DOMAIN = "ipo-proof/ledger-genesis/v1";
+
+/**
+ * The `prevHash` of seq = 1. Without a `ledgerId` it is the constant placeholder above (the low-level
+ * `HashChainedLedger` default, kept as confirmed). With a `ledgerId` it is
+ * `sha256(canonicalJson({domain: "ipo-proof/ledger-genesis/v1", ledgerId}))`, so two ledgers
+ * (staging / production / per IPO) never share a genesis and a chain cannot be replayed into
+ * another ledger. Returns `undefined` for an id that is not a synthetic identifier.
+ */
+export function ledgerGenesisHash(ledgerId: string | undefined): string | undefined {
+  if (ledgerId === undefined) return LEDGER_GENESIS_PREV_HASH;
+  if (!isSyntheticId(ledgerId)) return undefined;
+  return sha256CanonicalHex({ domain: LEDGER_GENESIS_DOMAIN, ledgerId });
+}
 
 export const LedgerEventType = {
   PARTICIPATION_RECORDED: "PARTICIPATION_RECORDED",
@@ -156,7 +173,7 @@ export type ParseRejection = (typeof ParseRejection)[keyof typeof ParseRejection
 export type ParseResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reasonCode: ParseRejection };
 
 const HEX64 = /^[0-9a-f]{64}$/;
-const SIGNATURE = /^0x[0-9a-fA-F]{130}$/; // 65 bytes, as in the EIP-712 signature format of the design (format only)
+const SIGNATURE = /^0x[0-9a-f]{130}$/; // 65 bytes, LOWERCASE hex only (design #38 §2.2.1): one encoding per signature, so one eventHash
 const SCHEME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const NONCE = /^[A-Za-z0-9_-]{1,128}$/;
 const MALFORMED = { ok: false, reasonCode: ParseRejection.EVENT_MALFORMED } as const;

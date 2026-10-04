@@ -88,11 +88,12 @@ export function createPrincipalRegistry(entries: Iterable<PrincipalInput>): Prin
   const admins = Object.freeze(all.filter((p) => p.role === PrincipalRole.REGISTRY_ADMIN));
   return {
     ok: true,
-    registry: {
-      get: (principalId) => byId.get(principalId),
+    // frozen: nobody holding the registry can swap its methods after the gate was built (B-1)
+    registry: Object.freeze({
+      get: (principalId: string) => byId.get(principalId),
       operator: () => operator,
       admins: () => admins,
-    },
+    }),
   };
 }
 

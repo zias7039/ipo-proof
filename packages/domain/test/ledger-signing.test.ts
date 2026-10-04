@@ -1,8 +1,11 @@
 /** LedgerAction & friends: typed-data encoding against an independent implementation, domain separation, principal registry. */
 import { describe, expect, it } from "vitest";
+import { hashDomain } from "viem";
 import {
   LEDGER_DOMAIN_NAME,
   LEDGER_EIP712_TYPES,
+  LedgerScheme,
+  operatorPayloadDigest,
   digestToHex,
   hashAnnulmentApproval,
   hashLedgerAction,
@@ -14,15 +17,15 @@ import {
 import { ATTESTATION_DOMAIN_NAME } from "../src/eip712.js";
 import { Eip712EncodingError } from "../src/eip712-encoding.js";
 import { PrincipalRole, annulmentConfigured, createPrincipalRegistry } from "../src/ledger/principals.js";
-import { PRINCIPALS, LEDGER_TEST_DOMAIN, principals, viemDigest } from "./ledger-auth-fixtures.js";
+import { PRINCIPALS, LEDGER_TEST_DOMAIN, LEDGER_TEST_ID, ledgerViemDomain, principals, viemDigest } from "./ledger-auth-fixtures.js";
 import { syntheticAccount } from "./signing.js";
 
-const dom = ledgerDomainSeparator(LEDGER_TEST_DOMAIN);
+const dom = ledgerDomainSeparator(LEDGER_TEST_DOMAIN, LEDGER_TEST_ID);
 const HASH = `0x${"ab".repeat(32)}`;
 const ACTION = { actorId: "manager_x", fundId: "fund_x", ipoId: "ipo_1", targetState: "PARTICIPATING", requestNonce: "req_1", expiresAt: 1_900_000_000_000 };
 const ANNUL = { actorId: "manager_x", fundId: "fund_x", ipoId: "ipo_1", targetSeq: 5, targetEventHash: HASH, reason: "MISTAKEN_ENTRY", replacementState: "", requestNonce: "annul_1", expiresAt: 1_900_000_000_000 };
 const APPROVAL = { approverId: "admin_1", annulmentDigest: HASH, requestNonce: "approval_1", expiresAt: 1_900_000_000_000 };
-const OPERATOR = { action: "IPO_CLOSED", ipoId: "ipo_1", requestNonce: "close_1", expiresAt: 1_900_000_000_000 };
+const OPERATOR = { actorId: "operator_1", action: "IPO_CLOSED", ipoId: "ipo_1", payloadDigest: operatorPayloadDigest({ closesAt: 1_800_086_400_000 }), requestNonce: "close_1", expiresAt: 1_900_000_000_000 };
 
 const big = (m: Record<string, unknown>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, typeof v === "number" ? BigInt(v) : v]));
 
@@ -38,6 +41,7 @@ describe("typed data matches an independent EIP-712 implementation (viem)", () =
 
   it("the signed fields follow the design (§3.2) and contain no amount, capacity or exposure (principle E)", () => {
     expect(LEDGER_EIP712_TYPES.LedgerAction.map((f) => f.name)).toEqual(["actorId", "fundId", "ipoId", "targetState", "requestNonce", "expiresAt"]);
+    expect(LEDGER_EIP712_TYPES.OperatorAction.map((f) => f.name)).toEqual(["actorId", "action", "ipoId", "payloadDigest", "requestNonce", "expiresAt"]);
     expect(LEDGER_EIP712_TYPES.AnnulmentApproval.map((f) => f.name)).toEqual(["approverId", "annulmentDigest", "requestNonce", "expiresAt"]);
     const names = Object.values(LEDGER_EIP712_TYPES).flatMap((fields) => fields.map((f) => f.name.toLowerCase()));
     for (const n of names) expect(n, n).not.toMatch(/amount|krw|capacity|exposure|salt/);
@@ -49,6 +53,34 @@ describe("domain and type separation", () => {
     expect(LEDGER_DOMAIN_NAME).not.toBe(ATTESTATION_DOMAIN_NAME);
   });
 
+  it("the domain separator (with the ledger-id salt) equals the independent implementation's", () => {
+    expect(digestToHex(ledgerDomainSeparator(LEDGER_TEST_DOMAIN, LEDGER_TEST_ID))).toBe(hashDomain({ domain: ledgerViemDomain(LEDGER_TEST_DOMAIN), types: { EIP712Domain: [
+      { name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }, { name: "verifyingContract", type: "address" }, { name: "salt", type: "bytes32" },
+    ] } }));
+  });
+
+  it("a different ledger id gives a different digest, so a signature for one ledger instance is useless on another (M-3)", () => {
+    const here = digestToHex(ledgerDigest(dom, hashLedgerAction(ACTION)));
+    const there = digestToHex(ledgerDigest(ledgerDomainSeparator(LEDGER_TEST_DOMAIN, "ledger_other"), hashLedgerAction(ACTION)));
+    expect(there).not.toBe(here);
+    expect(() => ledgerDomainSeparator(LEDGER_TEST_DOMAIN, "Not A Synthetic Id")).toThrow(TypeError);
+  });
+
+  it("scheme names follow design PR #38 section 2.2.2", () => {
+    expect(LedgerScheme).toEqual({
+      LEDGER_ACTION: "EIP712_LEDGER_ACTION_V1",
+      LEDGER_ANNULMENT: "EIP712_LEDGER_ANNULMENT_V1",
+      ANNULMENT_APPROVAL: "EIP712_LEDGER_ANNULMENT_APPROVAL_V1",
+      OPERATOR_ACTION: "EIP712_LEDGER_OPERATOR_ACTION_V1",
+    });
+  });
+
+  it("operatorPayloadDigest is the sha256 of the tagged canonical payload and depends on the payload", () => {
+    expect(operatorPayloadDigest({ closesAt: 1 })).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(operatorPayloadDigest({ closesAt: 1 })).not.toBe(operatorPayloadDigest({ closesAt: 2 }));
+    expect(operatorPayloadDigest({ closesAt: 1 })).toBe(operatorPayloadDigest({ closesAt: 1 }));
+  });
+
   it("any change of name, version, chainId or verifyingContract changes the digest (L-07)", () => {
     const base = digestToHex(ledgerDigest(dom, hashLedgerAction(ACTION)));
     for (const d of [
@@ -57,7 +89,7 @@ describe("domain and type separation", () => {
       { ...LEDGER_TEST_DOMAIN, chainId: 1n },
       { ...LEDGER_TEST_DOMAIN, verifyingContract: `0x${"2".repeat(40)}` },
     ]) {
-      expect(digestToHex(ledgerDigest(ledgerDomainSeparator(d), hashLedgerAction(ACTION)))).not.toBe(base);
+      expect(digestToHex(ledgerDigest(ledgerDomainSeparator(d, LEDGER_TEST_ID), hashLedgerAction(ACTION)))).not.toBe(base);
     }
   });
 
@@ -71,7 +103,8 @@ describe("domain and type separation", () => {
     for (const [message, hash] of cases) {
       const base = digestToHex(hash(message as never));
       for (const [k, v] of Object.entries(message)) {
-        const changed = typeof v === "number" ? v + 1 : v === HASH ? `0x${"cd".repeat(32)}` : `${String(v)}x`;
+        const isHex32 = typeof v === "string" && /^0x[0-9a-f]{64}$/.test(v);
+        const changed = typeof v === "number" ? v + 1 : isHex32 ? `0x${"cd".repeat(32)}` : `${String(v)}x`;
         expect(digestToHex(hash({ ...message, [k]: changed } as never)), k).not.toBe(base);
       }
     }
