@@ -4,9 +4,9 @@ import { HashChainedLedger, verifyChain } from "../src/ledger/chain.js";
 import type { ChainOptions } from "../src/ledger/chain.js";
 import { close, lock, must, participate } from "./ledger-fixtures.js";
 
-/** Checkpoints require a ledgerId (C-5), so every ledger in this file has one. */
+/** A chain is always verified as the log of a named ledger (C-5, L-B), so every ledger in this file has one. */
 const LID = "ledger_cp";
-const vc = (events: readonly unknown[], options: ChainOptions = {}) => verifyChain(events, { ledgerId: LID, ...options });
+const vc = (events: readonly unknown[], options: Partial<ChainOptions> = {}) => verifyChain(events, { ledgerId: LID, ...options });
 
 function chainOf(n: number, ledgerId: string = LID) {
   const ledger = new HashChainedLedger(() => 1_800_000_000_001, { ledgerId });
@@ -137,13 +137,11 @@ describe("checkpoints: truncation and rewriting are detected only when a trusted
 describe("re-review C-2..C-5: anchored status, freshness pin, ledgerId requirement", () => {
   it("C-2: the result says whether it is anchored and how far (anchoredAtSeq)", () => {
     const full = chainOf(5);
-    expect(vc(full.events())).toMatchObject({ ok: true, anchoredAtSeq: null, ledgerBound: true });
+    expect(vc(full.events())).toMatchObject({ ok: true, anchoredAtSeq: null });
     expect(vc(full.events(), { checkpoints: [] })).toMatchObject({ ok: true, anchoredAtSeq: null });
     expect(vc(full.events(), { checkpoints: [cp(full, 2)] })).toMatchObject({ ok: true, anchoredAtSeq: 2 });
     expect(vc(full.events(), { checkpoints: [cp(full, 4), cp(full, 2), cp(full, 3)] })).toMatchObject({ ok: true, anchoredAtSeq: 4 });
-    // placeholder genesis without checkpoints stays usable but is visibly unanchored and not ledger-bound
-    expect(verifyChain(full.events())).toMatchObject({ ok: false }); // other genesis than LID
-    expect(verifyChain([])).toMatchObject({ ok: true, anchoredAtSeq: null, ledgerBound: false });
+    expect(vc([])).toMatchObject({ ok: true, anchoredAtSeq: null });
   });
 
   it("C-4: events after the last anchor are covered by the hash chain only (documented limit, visible via anchoredAtSeq)", () => {
@@ -159,12 +157,14 @@ describe("re-review C-2..C-5: anchored status, freshness pin, ledgerId requireme
     expect(vc(fake.events(), { checkpoints: [cp(real, 5)] })).toMatchObject({ ok: false, reasonCode: "LEDGER_CHECKPOINT_MISMATCH" });
   });
 
-  it("C-5: checkpoints without a ledgerId are refused (an anchor means nothing against the placeholder genesis)", () => {
+  it("C-5 / L-B: a ledgerId is required, so an anchor can never be checked against a nameless chain", () => {
     const full = chainOf(3);
-    expect(verifyChain(full.events(), { checkpoints: [cp(full, 2)] })).toEqual({ ok: false, seq: 1, reasonCode: "LEDGER_CHECKPOINT_INVALID" });
-    expect(verifyChain([], { checkpoints: [{ seq: 1, eventHash: "a".repeat(64) }] })).toMatchObject({ reasonCode: "LEDGER_CHECKPOINT_INVALID" });
-    expect(HashChainedLedger.fromEvents(full.events(), () => 0, { checkpoints: [cp(full, 2)] })).toMatchObject({ ok: false, reasonCode: "LEDGER_CHECKPOINT_INVALID" });
-    expect(verifyChain([], { checkpoints: [] })).toMatchObject({ ok: true }); // no anchors, nothing to bind
+    const required = { ok: false, seq: 1, reasonCode: "LEDGER_ID_REQUIRED" };
+    expect(verifyChain(full.events(), { checkpoints: [cp(full, 2)] } as never)).toEqual(required);
+    expect(verifyChain([], { checkpoints: [{ seq: 1, eventHash: "a".repeat(64) }] } as never)).toEqual(required);
+    expect(verifyChain([], { checkpoints: [] } as never)).toEqual(required);
+    expect(verifyChain(full.events(), { minCheckpointSeq: 1 } as never)).toEqual(required);
+    expect(HashChainedLedger.fromEvents(full.events(), () => 0, { checkpoints: [cp(full, 2)] } as never)).toEqual(required);
   });
 
   it("C-3: minCheckpointSeq rejects an older (or missing) anchor than one the caller already holds", () => {
@@ -190,12 +190,11 @@ describe("re-review C-2..C-5: anchored status, freshness pin, ledgerId requireme
     expect(vc(rolledBack, { checkpoints: [oldAnchor], minCheckpointSeq: pin ?? 1 })).toMatchObject({ ok: false, reasonCode: "LEDGER_CHECKPOINT_STALE" });
   });
 
-  it("minCheckpointSeq must be a positive safe integer and needs a ledgerId; chain errors are still reported first", () => {
+  it("minCheckpointSeq must be a positive safe integer; chain errors are still reported first", () => {
     const full = chainOf(3);
     for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "3", null, 3n, Number.MAX_SAFE_INTEGER + 1]) {
       expect(vc(full.events(), { checkpoints: [cp(full, 3)], minCheckpointSeq: bad as never }), String(bad)).toEqual({ ok: false, seq: 1, reasonCode: "LEDGER_CHECKPOINT_INVALID" });
     }
-    expect(verifyChain(full.events(), { minCheckpointSeq: 1 })).toMatchObject({ ok: false, reasonCode: "LEDGER_CHECKPOINT_INVALID" });
     const tampered = full.events().map((e, i) => (i === 1 ? { ...e, recordedAt: e.recordedAt + 1 } : e));
     expect(vc(tampered, { checkpoints: [cp(full, 1)], minCheckpointSeq: 3 })).toMatchObject({ ok: false, seq: 2, reasonCode: "LEDGER_EVENT_HASH_MISMATCH" });
     expect(verifyChain(full.events(), { ledgerId: LID, get minCheckpointSeq(): never { throw new Error("boom"); } })).toEqual({ ok: false, seq: 1, reasonCode: "LEDGER_CHECKPOINT_INVALID" });

@@ -31,14 +31,14 @@ AttestationVerifier, Clock ────────┘                          
 | `verify.ts` | `verifyBid`, `BidVerification`, reason code, 영수증 생성 |
 | `ledger/events.ts` | 참여 원장 이벤트 봉투(`LedgerEvent`)와 엄격한 파서. 이벤트에는 금액이 없고 payload는 허용 목록으로 닫혀 있음. 서명은 이 모듈에서 형식만 검사하며 검증은 `ledger/authorized.ts`가 함 |
 | `ledger/derive.ts` | 이벤트를 접어(fold) 유효 상태를 도출(`LedgerProjection`, `getStateAt`). 상태 전이는 기존 `transition()`을 재사용하고 `EVENT_ANNULLED`로만 UNKNOWN으로 되돌림 |
-| `ledger/chain.ts` | 해시 체인(`verifyChain`, `HashChainedLedger`). 변조 **탐지**일 뿐 블록체인도 ZK도 아님. `HashChainedLedger`는 저수준·무인증 저장소라 패키지 배럴에서 내렸고(상대 경로로만 import), 내부 상태는 `#private`, `events()`는 동결된 배열을 반환함. genesis 해시는 `ledgerId`(선택)에서 파생됨. `verifyChain`/`fromEvents`는 호출자가 이미 신뢰하는 앵커 `{seq, eventHash}`(**서명 없는 평문**, 발급 경로·서명 타입·검증 모두 미구현)와 비교해 그 앵커까지의 잘라내기·되감기를 탐지함. **K-05(운영자 키 탈취) 완화책이 아님**: 앵커를 누가 만들었는지는 이 모듈이 증명하지 못하며, 앵커가 없으면(`anchoredAtSeq: null`) 끝부분 잘라내기는 탐지되지 않고, 마지막 앵커 이후 이벤트는 해시 체인으로만 보호됨. 앵커를 쓰려면 `ledgerId`가 필수이고, `minCheckpointSeq`(이전 검증의 `anchoredAtSeq`)로 더 오래된 앵커로의 롤백을 거부할 수 있음 |
+| `ledger/chain.ts` | 해시 체인(`verifyChain`, `HashChainedLedger`). 변조 **탐지**일 뿐 블록체인도 ZK도 아님. `HashChainedLedger`는 저수준·무인증 저장소라 패키지 배럴에서 내렸고(상대 경로로만 import), 내부 상태는 `#private`, `events()`는 동결된 배열을 반환함. genesis 해시는 `ledgerId`에서 파생되며 `ledgerId`는 **필수**(`verifyChain`은 없으면 `LEDGER_ID_REQUIRED`, 자리표시자 genesis 없음). 클래스와 프로토타입은 동결됨. `verifyChain`/`fromEvents`는 호출자가 이미 신뢰하는 앵커 `{seq, eventHash}`(**서명 없는 평문**, 발급 경로·서명 타입·검증 모두 미구현)와 비교해 그 앵커까지의 잘라내기·되감기를 탐지함. **K-05(운영자 키 탈취) 완화책이 아님**: 앵커를 누가 만들었는지는 이 모듈이 증명하지 못하며, 앵커가 없으면(`anchoredAtSeq: null`) 끝부분 잘라내기는 탐지되지 않고, 마지막 앵커 이후 이벤트는 해시 체인으로만 보호됨. `minCheckpointSeq`(이전 검증의 `anchoredAtSeq`)로 더 오래된 앵커로의 롤백을 거부할 수 있음 |
 | `ledger/signing.ts` | 원장 EIP-712 typed data(`LedgerAction`, `LedgerAnnulment`, `AnnulmentApproval`, `OperatorAction`), 도메인(name·version·chainId·verifyingContract·salt) 분리. `salt`는 `ledgerId`에서 파생한 genesis 해시. `OperatorAction`은 actorId·payloadDigest를 포함. 서명 대상에 금액 없음 |
 | `ledger/principals.ts` | 서명자 → 역할/주체 레지스트리(주입, 중복·키 재사용 거부), 정정 승인자 독립성 검사(I1~I5) |
-| `ledger/authorized.ts` | `AuthorizedLedger`: 서명 검증 + 인가(R1~R5, R6b, R8, R10, R14) 게이트. 던지지 않고 reason code 반환, nonce/재전송 방지(인메모리, 인증 통과 후 거부돼도 소비), 최대 유효기간. 내부 상태 `#private`+동결. 서명은 출처 증명일 뿐 데이터 진위·ZK가 아님 |
+| `ledger/authorized.ts` | `AuthorizedLedger`: 서명 검증 + 인가(R1~R5, R6b, R8, R10, R14) 게이트. 던지지 않고 reason code 반환, nonce/재전송 방지(인메모리, 인증 통과 후 거부돼도 소비), 최대 유효기간. 내부 상태 `#private`+동결(클래스·프로토타입도 `Object.freeze`). 서명은 출처 증명일 뿐 데이터 진위·ZK가 아님 |
 
 ## 주요 결정
 
-**용량 입력 경로 없음.** `BidRequest`에는 `fundId`, `ipoId`, `bidAmount`만 있다. `verifyBid`는 다른 키가 하나라도 있는 요청을 읽기 전에 거부한다(`INVALID_BID_REQUEST`). 총 용량과 노출은 `CapacityAttestation` 안에만 존재한다.
+**용량 입력 경로 없음.** `BidRequest`에는 `fundId`, `ipoId`, `bidAmount`만 있다. `verifyBid`는 다른 키가 하나라도 있는 요청을 거부한다(그 키의 값은 읽지 않는다)(`INVALID_BID_REQUEST`). 총 용량과 노출은 `CapacityAttestation` 안에만 존재한다. 요청 객체는 `fundId`/`ipoId`/`bidAmount`와 키 목록을 한 번씩만 읽어 원시값 스냅샷으로 만들며, 판정과 영수증 모두 그 스냅샷만 쓴다. 주입 의존성이 던지거나 시계가 안전한 정수가 아니면 `DEPENDENCY_ERROR`로 거부하고(예외 없음), 검증기 결과는 `ok === true`일 때만 통과한다.
 
 **참여 상태기계.** 허용되는 전이는 `UNKNOWN -> PARTICIPATING`, `UNKNOWN -> NON_PARTICIPATION_LOCKED`뿐이다. 동일 상태 반복과 UNKNOWN으로의 이동을 포함한 그 밖의 모든 전이는 거부한다. 잠긴 펀드의 참여 요청은 `NON_PARTICIPATION_LOCK_ACTIVE`, 참여 중인 펀드를 잠그려는 요청은 `PARTICIPATION_ALREADY_RECORDED`가 된다.
 
@@ -55,7 +55,7 @@ AttestationVerifier, Clock ────────┘                          
 
 **차감 누락.** `Fund.underlyingFundIds`(레지스트리 관점)는 어테스테이션 노출에 있는 펀드 집합과 같아야 한다. 누락은 `UNDERLYING_EXPOSURE_OMITTED`, 초과는 `UNDERLYING_EXPOSURE_NOT_IN_REGISTRY`, 중복은 `DUPLICATE_UNDERLYING_EXPOSURE`이다. 이는 레지스트리가 운용사로부터 독립적이라고 가정하는 것이며, 여기서 강제되는 것이 아니다.
 
-**게시(publish), nonce 재생, 교체.** `InMemoryAttestationStore`는 생성자에서 `AttestationVerifier`를 받으며, `publish(attestation)`은 `{ok: true}` 또는 `{ok: false, reasonCode}`를 반환한다(이전에는 boolean). `revoke`를 제외하면 상태를 바꾸는 유일한 경로이며 `verifyBid`는 읽기만 한다. 규칙은 다음 순서로 적용되고, 어떤 거부에서도 상태는 바뀌지 않는다. (1) 검증기가 어테스테이션을 받아들여야 한다(`ATTESTER_UNAUTHORIZED` / `SIGNATURE_INVALID`). 서명이 없거나 잘못된 입력은 nonce를 선점하지도, 진짜 어테스테이션을 교체하지도 못한다. (2) 현재 어테스테이션과 동일한 것을 다시 게시하면 상태 변화 없는 성공이다. 이미 교체된 `attestationId`는 다시 돌아올 수 없고(`ATTESTATION_SUPERSEDED`), 같은 id를 다른 내용으로 재사용하면 거부된다(`ATTESTATION_ID_CONFLICT`). (3) 어테스터별로 스코프가 정해진 nonce는 그것을 처음 사용한 어테스테이션에 바인딩되며, 다른 `attestationId`가 쓰면 거부된다(`NONCE_ALREADY_BOUND`). 교체된 어테스테이션의 바인딩을 포함해 바인딩은 절대 해제되지 않는다. (4) `(fundId, ipoId)`마다 가장 새로운 어테스테이션만 제공되며, 새 어테스테이션은 `issuedAt`이 엄격히 더 클 때만 현재 것을 교체한다(`NOT_NEWER_THAN_CURRENT`). 따라서 더 오래되고 용량이 큰 어테스테이션을 다시 올릴 수 없다. `verifyBid`는 읽은 것의 서명을 여전히 검사하고, 다른 어테스테이션에 바인딩된 nonce는 `ATTESTATION_NONCE_REPLAY`로 보고한다. 게시 관문은 다층 방어(defence in depth)다. 폐기된 현재 어테스테이션은 진짜로 더 새로운 것으로 교체할 수 있다. 같은 어테스테이션을 다시 검증하는 것(여러 입찰)은 허용된다.
+**게시(publish), nonce 재생, 교체.** `InMemoryAttestationStore`는 생성자에서 `AttestationVerifier`를 받으며, `publish(attestation)`은 `{ok: true}` 또는 `{ok: false, reasonCode}`를 반환한다(이전에는 boolean). `revoke`를 제외하면 상태를 바꾸는 유일한 경로이며 `verifyBid`는 읽기만 한다. 규칙은 다음 순서로 적용되고, 어떤 거부에서도 상태는 바뀌지 않는다. (1) 검증기가 어테스테이션을 받아들여야 한다(`ATTESTER_UNAUTHORIZED` / `SIGNATURE_INVALID`). 서명이 없거나 잘못된 입력은 nonce를 선점하지도, 진짜 어테스테이션을 교체하지도 못한다. (2) 현재 어테스테이션과 동일한 것을 다시 게시하면 상태 변화 없는 성공이다. 이미 교체된 `attestationId`는 다시 돌아올 수 없고(`ATTESTATION_SUPERSEDED`), 같은 id를 다른 내용으로 재사용하면 거부된다(`ATTESTATION_ID_CONFLICT`). (3) 어테스터별로 스코프가 정해진 nonce는 그것을 처음 사용한 어테스테이션에 바인딩되며, 다른 `attestationId`가 쓰면 거부된다(`NONCE_ALREADY_BOUND`). 교체된 어테스테이션의 바인딩을 포함해 바인딩은 절대 해제되지 않는다. (4) `(fundId, ipoId)`마다 가장 새로운 어테스테이션만 제공되며, 새 어테스테이션은 `issuedAt`이 엄격히 더 클 때만 현재 것을 교체한다(`NOT_NEWER_THAN_CURRENT`). 따라서 더 오래되고 용량이 큰 어테스테이션을 다시 올릴 수 없다. `verifyBid`는 읽은 것의 서명을 여전히 검사하고, 다른 어테스테이션에 바인딩된 nonce는 `ATTESTATION_NONCE_REPLAY`로 보고한다. 게시 관문은 다층 방어(defence in depth)다. 폐기된 현재 어테스테이션은 진짜로 더 새로운 것으로 교체할 수 있다. 같은 어테스테이션을 다시 검증하는 것(여러 입찰)은 허용된다. `publish`와 `verifyBid`는 어테스테이션을 한 번만 읽어 동결한 복사본으로 검증·저장·평가한다(읽기 실패는 `publish`에서 `ATTESTATION_MALFORMED`, `verifyBid`에서도 `ATTESTATION_MALFORMED`).
 
 **폐기(Revocation)** 는 서명 대상 객체 밖(`RevocationLookup`)에 둔다.
 
@@ -77,6 +77,21 @@ AttestationVerifier, Clock ────────┘                          
 **영수증 해시.** `proofHash = sha256(canonicalJson(receipt))`이고 `proofHashKind = "SHA256_RECEIPT_NOT_A_ZK_PROOF"`이다. 영수증에는 kind, version, fund id, IPO id, 규칙 버전, attestation id, attester id, 적격 여부, reason code, flags, 검증 시각이 들어간다. 입찰 금액, 총 용량, 노출, 조정 용량, 서명은 의도적으로 제외한다. 엔트로피가 낮은 금액의 해시는 무차별 대입으로 풀릴 수 있기 때문이다. 이것은 "이 검증자가 이 결과를 보고했다"는 증거일 뿐, 그 결과가 맞다는 증명이 아니다.
 
 **검사 순서**(처음 실패한 것이 결정)는 `verify.ts`의 `verifyBid` 주석에 문서화되어 있다.
+
+## 원장 운영 메모 (권장 설정값, 시계 점프 복구)
+
+**권장 설정값.** 코드에는 기본값이 없고 설정은 필수다(미설정·NaN·0·음수는 `TypeError`). 아래는 문서상의 **권장값**일 뿐이다.
+| 설정 | 권장값 | 비고 |
+|---|---|---|
+| `maxRequestTtlMs` | 24시간 = `86_400_000` | 서명 요청의 최대 유효기간. 짧을수록 유출된 서명 요청의 위험 구간이 줄고, 너무 짧으면 서명·전달 지연으로 요청이 만료된다. 리드 결정(2026-10-05) |
+| `maxFindingsPerIpo` (#47) | 50 | IPO당 `FINDING_ANNOTATED` 상한. 게이트에서만 강제하고 `verifyChain`에는 적용하지 않는다(리드 결정) |
+
+**시계 점프와 high-water mark (보안QA L-C).** 시퀀서 시계는 신뢰 구성요소이고, 게이트는 읽은 시각의 최대값(`#highWater`, 인메모리)보다 작은 시각을 `LEDGER_CLOCK_REGRESSION`으로 거부한다(마감 창을 시계 되감기로 다시 여는 것을 막기 위한 fail-closed 선택). 그래서 시계가 **한 번이라도 큰 미래 값**을 돌려주면 시계가 정상으로 돌아온 뒤에도, 정상 시각이 high-water를 넘을 때까지 모든 요청이 거부된다(가용성 상실, 위조는 아님). 서명 없는 요청은 이 값을 올리지 못하고 서버 시계만 반영된다. 코드로 high-water를 낮추거나 우회하는 경로는 **의도적으로 만들지 않았다**(그 경로가 곧 되감기 공격 경로가 된다). 운영 절차:
+1. **원인 확인.** 시계 소스(NTP 등)의 점프를 확인하고 고친다. 점프가 짧은 시간(요청 유효기간보다 짧음) 안에 해소되는 값이면 **기다리면** 자동으로 풀린다. 기다리는 동안 요청은 거부되지만 nonce는 소비되지 않으므로 같은 서명 요청을 나중에 그대로 다시 낼 수 있다(만료 전까지).
+2. **기다릴 수 없을 만큼 큰 점프(수 시간~)이거나, 미래 `recordedAt`을 가진 이벤트가 이미 체인에 기록된 경우**: 그 체인에는 이후 정상 시각의 이벤트를 붙일 수 없다(`recordedAt` 비감소 규칙). 현재 PoC에는 체인을 저장소에서 `AuthorizedLedger`로 복원하는 경로와 nonce·high-water 영속이 없으므로, 복구는 **새 `ledgerId`로 새 원장을 만들고** 기존 체인은 `verifyChain(events, {ledgerId: <이전 id>})`로 검증 가능한 감사용 기록으로 보관하는 것뿐이다. 필요한 기록은 새 도메인(새 `ledgerId`가 서명 도메인 salt에 들어감)으로 다시 서명받는다. 이전 원장용 서명은 새 원장에서 무효다.
+3. **같은 `ledgerId`로 프로세스만 재시작하지 말 것.** 재시작은 high-water와 nonce 표를 지우지만 체인도 비게 되며(복원 경로 없음), 같은 `ledgerId`와 아직 만료되지 않은 서명 요청이 재생될 위험이 있다. 같은 id를 다시 쓰려면 이전 요청의 `maxRequestTtlMs`가 모두 지난 뒤에만 한다.
+4. **예방.** 시계 소스를 하나로 고정하고 단조 증가(slew)를 보장하며, 시계 점프를 모니터링·알림한다. 점프 시 `closesAt`을 넘겨 읽히면 정당한 기록이 `IPO_WINDOW_ELAPSED`로 거부될 수 있다(fail-closed).
+5. nonce·high-water의 영속화와 체인 복원이 구현되면(후속) 이 절차를 갱신한다.
 
 ## 이번 조각에 없는 것
 

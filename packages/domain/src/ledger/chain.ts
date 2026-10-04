@@ -55,6 +55,8 @@ export const ChainRejection = {
    * chain was rebuilt with a rewound clock. Refused when appending and when verifying.
    */
   LEDGER_CLOCK_REGRESSION: "LEDGER_CLOCK_REGRESSION",
+  /** `verifyChain` was called without a `ledgerId` (L-B): a chain is only meaningful as the log of a named ledger. */
+  LEDGER_ID_REQUIRED: "LEDGER_ID_REQUIRED",
 } as const;
 export type ChainRejection = (typeof ChainRejection)[keyof typeof ChainRejection];
 
@@ -63,12 +65,6 @@ export type ChainVerification =
       readonly ok: true;
       readonly length: number;
       readonly headHash: string;
-      /**
-       * True only if the chain was verified against a `ledgerId` (its genesis hash). False means it was
-       * checked against the placeholder genesis only (N-5): internally consistent, but not shown to
-       * belong to any particular ledger instance, so do not treat it as the verified log of a ledger.
-       */
-      readonly ledgerBound: boolean;
       /**
        * The highest checkpoint `seq` this chain was matched against, or `null` when no checkpoint was given
        * (C-2): `null` means the result is NOT anchored and a cut-off end is not detected. Events after
@@ -122,38 +118,40 @@ export interface ChainOptions {
   /**
    * Identifier of the ledger the chain belongs to (M-3). It selects the genesis `prevHash`
    * (`ledgerGenesisHash`); a chain built for another ledger id fails at position 1 with
-   * LEDGER_PREV_HASH_MISMATCH. Omitted: the constant placeholder genesis (low-level default).
+   * LEDGER_PREV_HASH_MISMATCH. REQUIRED (L-B): there is no placeholder genesis, so a verified chain is
+   * always shown to belong to the ledger the caller named. A missing id is LEDGER_ID_REQUIRED.
    */
-  readonly ledgerId?: string;
+  readonly ledgerId: string;
   /**
    * Trusted anchors (issue #37 section 3). Each is checked against the chain: shorter than the
    * checkpoint -> LEDGER_CHECKPOINT_NOT_REACHED (truncation), other hash at that position ->
    * LEDGER_CHECKPOINT_MISMATCH (rewrite), malformed -> LEDGER_CHECKPOINT_INVALID. Omitted or empty:
    * no anchor, the result has `anchoredAtSeq: null`, and a cut-off end is NOT detected (see the module comment).
-   * Using checkpoints REQUIRES `ledgerId` (C-5): an anchor is meaningless against the placeholder genesis, so
-   * checkpoints without `ledgerId` are LEDGER_CHECKPOINT_INVALID.
+   * An anchor is only meaningful for a named ledger; `ledgerId` is required for every verification (L-B, C-5).
    */
   readonly checkpoints?: readonly ChainCheckpoint[];
   /**
    * Freshness pin (C-3): the highest anchor `seq` the caller has already accepted (typically the
    * `anchoredAtSeq` of its previous verification). The newest checkpoint given must be at least this
    * high, otherwise LEDGER_CHECKPOINT_STALE (also when no checkpoint is given). Must be a positive safe
-   * integer, else LEDGER_CHECKPOINT_INVALID. Requires `ledgerId` like `checkpoints`.
+   * integer, else LEDGER_CHECKPOINT_INVALID.
    */
   readonly minCheckpointSeq?: number;
 }
 
-export function verifyChain(events: readonly unknown[], options: ChainOptions = {}): ChainVerification {
-  // The options object is read once into locals.
+export function verifyChain(events: readonly unknown[], options: ChainOptions): ChainVerification {
+  // The options object is read once into locals; untyped callers may pass anything.
   let ledgerId: unknown;
   let rawCheckpoints: unknown;
   let minCheckpointSeq: unknown;
   try {
     ({ ledgerId, checkpoints: rawCheckpoints, minCheckpointSeq } = options);
   } catch {
-    return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_INVALID };
+    // a missing / unreadable ledgerId is LEDGER_ID_REQUIRED; a failure on a later option is a malformed checkpoint option
+    return { ok: false, seq: 1, reasonCode: ledgerId === undefined ? ChainRejection.LEDGER_ID_REQUIRED : ChainRejection.LEDGER_CHECKPOINT_INVALID };
   }
-  const genesis = ledgerGenesisHash(ledgerId as string | undefined);
+  if (ledgerId === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_ID_REQUIRED };
+  const genesis = ledgerGenesisHash(ledgerId as string);
   if (genesis === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_PREV_HASH_MISMATCH };
   // Checkpoints are shape-checked before the (expensive) chain walk.
   const anchors = new Map<number, string>();
@@ -172,8 +170,6 @@ export function verifyChain(events: readonly unknown[], options: ChainOptions = 
     } catch {
       return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_INVALID };
     }
-    // C-5: an anchor only means something against a genesis derived from a ledgerId.
-    if (list.length > 0 && ledgerId === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_INVALID };
     for (const raw of list) {
       const cp = readCheckpoint(raw);
       if (cp === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_INVALID };
@@ -183,7 +179,6 @@ export function verifyChain(events: readonly unknown[], options: ChainOptions = 
       anchors.set(cp.seq, cp.eventHash);
     }
   }
-  if (pin !== undefined && ledgerId === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_INVALID };
   const projection = new LedgerProjection();
   let prevHash = genesis;
   let prevRecordedAt = 0;
@@ -219,7 +214,7 @@ export function verifyChain(events: readonly unknown[], options: ChainOptions = 
   if (pin !== undefined && (anchoredAtSeq === null || anchoredAtSeq < pin)) {
     return { ok: false, seq: events.length + 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_STALE };
   }
-  return { ok: true, length: events.length, headHash: prevHash, ledgerBound: ledgerId !== undefined, anchoredAtSeq };
+  return { ok: true, length: events.length, headHash: prevHash, anchoredAtSeq };
 }
 
 export type AppendResult =
@@ -242,8 +237,8 @@ export class HashChainedLedger implements ParticipationLookup {
   readonly #now: () => number;
   readonly #genesis: string;
 
-  /** Throws `TypeError` for an invalid `ledgerId` (deployment configuration, not attacker input). */
-  constructor(now: () => number, options: ChainOptions = {}) {
+  /** Throws `TypeError` for a missing or invalid `ledgerId` (deployment configuration, not attacker input). */
+  constructor(now: () => number, options: ChainOptions) {
     const genesis = ledgerGenesisHash(options.ledgerId);
     if (genesis === undefined) throw new TypeError("ledgerId must be a synthetic identifier");
     this.#now = now;
@@ -254,7 +249,7 @@ export class HashChainedLedger implements ParticipationLookup {
   static fromEvents(
     events: readonly unknown[],
     now: () => number,
-    options: ChainOptions = {},
+    options: ChainOptions,
   ): { readonly ok: true; readonly ledger: HashChainedLedger } | { readonly ok: false; readonly seq: number; readonly reasonCode: ChainRejection } {
     const verified = verifyChain(events, options);
     if (!verified.ok) return verified;
@@ -340,3 +335,7 @@ export class HashChainedLedger implements ParticipationLookup {
     return this.#chain[this.#chain.length - 1]?.eventHash ?? this.#genesis;
   }
 }
+
+// L-A: same hardening as AuthorizedLedger (the low-level chain is not exported from the barrel).
+Object.freeze(HashChainedLedger.prototype);
+Object.freeze(HashChainedLedger);
