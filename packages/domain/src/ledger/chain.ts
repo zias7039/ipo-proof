@@ -6,7 +6,8 @@
  * WHAT THIS IS NOT: a blockchain, a proof that recorded facts are true (principle B), or a
  * zero-knowledge proof (principle F). It also cannot detect that the END of the chain was cut off
  * or rewritten together with its own hash: that needs an external checkpoint (design §2.5, not
- * implemented). Nobody is authenticated or authorized here (see events.ts).
+ * implemented). Nobody is authenticated or authorized here: callers must go through AuthorizedLedger
+ * (authorized.ts); this class is the low-level, unauthenticated store (see events.ts).
  */
 import { ParticipationState } from "../participation.js";
 import type { ParticipationLookup } from "../participation.js";

@@ -7,9 +7,11 @@
  *    (principle F; ZK STATUS: NOT IMPLEMENTED).
  *  - This module checks STRUCTURE only. `authorization` / `coAuthorizations` are stored and
  *    hashed but their signatures are NOT verified here, and nobody is authorized by this module.
- *    Signature verification (EIP-712 LedgerAction) and the authorization rules R1-R15 are separate
- *    steps. Until they exist, a ledger built from this module must not accept input from
- *    untrusted callers directly.
+ *    Signature verification (EIP-712 LedgerAction, signing.ts) and the authorization rules live in
+ *    AuthorizedLedger (authorized.ts), which is the write entry point for untrusted callers.
+ *    HashChainedLedger itself stays low-level and unauthenticated: do not hand it to untrusted
+ *    callers. Still missing: R9 (key revocation), R15 (bid withdrawal, needs a bid store), BIND-1
+ *    origins, a registry change log, a persistent nonce store, external checkpoints.
  *  - Events carry no amounts and no capacity (principle E). The payload of every event type is a
  *    closed allowlist: any extra field (for example an amount) makes the event malformed.
  */
@@ -263,7 +265,7 @@ function closedPayload(v: unknown): IpoClosedPayload {
 const BODY_KEYS = ["eventType", "ipoId", "subjectFundId", "actorId", "authorization", "coAuthorizations", "payload", "registrySeq", "requestedAt"];
 const CHAIN_KEYS = ["schemaVersion", "seq", "prevHash", "recordedAt"];
 
-function bodyOf(r: Record<string, unknown>): LedgerEventBody {
+function bodyOf(r: Record<string, unknown>, allowMissingApproval = false): LedgerEventBody {
   const eventType = r["eventType"];
   if (typeof eventType !== "string") return bad();
   if (!Object.hasOwn(LedgerEventType, eventType)) return bad();
@@ -287,7 +289,8 @@ function bodyOf(r: Record<string, unknown>): LedgerEventBody {
       const payload = annulledPayload(r["payload"]);
       // R10 / R15 shape: a correction needs exactly one approver co-signature; a bid withdrawal needs none.
       const expected = payload.reason === AnnulmentReason.BID_WITHDRAWN ? 0 : 1;
-      if (common.coAuthorizations.length !== expected) return bad();
+      const missingAllowed = allowMissingApproval && expected === 1 && common.coAuthorizations.length === 0;
+      if (common.coAuthorizations.length !== expected && !missingAllowed) return bad();
       return { ...common, eventType, subjectFundId: id(r["subjectFundId"]), payload };
     }
     case LedgerEventType.IPO_CLOSED:
@@ -311,11 +314,20 @@ function parseWith<T>(fn: () => T): ParseResult<T> {
   }
 }
 
+export interface ParseDraftOptions {
+  /**
+   * Let a correction (MISTAKEN_ENTRY / KEY_COMPROMISE) arrive WITHOUT its approver co-signature, so
+   * the authorization gate can answer LEDGER_ANNUL_COSIGN_REQUIRED instead of EVENT_MALFORMED.
+   * Never use the result of such a parse to append: the ledger itself always re-parses strictly.
+   */
+  readonly allowMissingApproval?: boolean;
+}
+
 /** Parses a caller's draft. Chain fields (seq, prevHash, recordedAt, eventHash, schemaVersion) are NOT accepted from callers. */
-export function parseLedgerEventDraft(input: unknown): ParseResult<LedgerEventDraft> {
+export function parseLedgerEventDraft(input: unknown, options: ParseDraftOptions = {}): ParseResult<LedgerEventDraft> {
   return parseWith(() => {
     const r = record(input, BODY_KEYS);
-    return Object.freeze(bodyOf(r));
+    return Object.freeze(bodyOf(r, options.allowMissingApproval === true));
   });
 }
 

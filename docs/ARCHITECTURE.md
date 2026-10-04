@@ -25,12 +25,16 @@ AttestationVerifier, Clock ────────┘                          
 | `rules.ts` | `DEMO_RULE_V1`(동결), `DEMO_RULE_V2`와 규칙 버전 디스패치 |
 | `attestation.ts` | `AttestationVerifier` 인터페이스, 허용목록 검증기(서명 검사 없음, deprecated), 인메모리 어테스테이션/폐기/nonce 저장소 |
 | `eip712.ts` | `CapacityAttestation`용 EIP-712 typed data, `Eip712AttestationVerifier`(어테스터 레지스트리 + 서명 검사) |
+| `eip712-encoding.ts` | EIP-712 저수준 인코딩 헬퍼(`eip712.ts`와 `ledger/signing.ts`가 공유, 동작 변경 없음) |
 | `registry.ts` | Fund·IPO 레지스트리 인터페이스와 인메모리 구현 |
 | `hash.ts` | 정규화(canonical) JSON과 SHA-256 |
 | `verify.ts` | `verifyBid`, `BidVerification`, reason code, 영수증 생성 |
-| `ledger/events.ts` | 참여 원장 이벤트 봉투(`LedgerEvent`)와 엄격한 파서. 이벤트에는 금액이 없고 payload는 허용 목록으로 닫혀 있음. 서명은 형식만 검사하며 **검증하지 않음** |
+| `ledger/events.ts` | 참여 원장 이벤트 봉투(`LedgerEvent`)와 엄격한 파서. 이벤트에는 금액이 없고 payload는 허용 목록으로 닫혀 있음. 서명은 이 모듈에서 형식만 검사하며 검증은 `ledger/authorized.ts`가 함 |
 | `ledger/derive.ts` | 이벤트를 접어(fold) 유효 상태를 도출(`LedgerProjection`, `getStateAt`). 상태 전이는 기존 `transition()`을 재사용하고 `EVENT_ANNULLED`로만 UNKNOWN으로 되돌림 |
-| `ledger/chain.ts` | 해시 체인(`verifyChain`, `HashChainedLedger`). 변조 **탐지**일 뿐 블록체인도 ZK도 아님. 호출자 인증·인가는 아직 없음 |
+| `ledger/chain.ts` | 해시 체인(`verifyChain`, `HashChainedLedger`). 변조 **탐지**일 뿐 블록체인도 ZK도 아님. 저수준·무인증 저장소이므로 신뢰할 수 없는 호출자에게 직접 노출하지 말 것 |
+| `ledger/signing.ts` | 원장 EIP-712 typed data(`LedgerAction`, `LedgerAnnulment`, `AnnulmentApproval`, `OperatorAction`), 도메인(name·version·chainId·verifyingContract) 분리. 서명 대상에 금액 없음 |
+| `ledger/principals.ts` | 서명자 → 역할/주체 레지스트리(주입, 중복·키 재사용 거부), 정정 승인자 독립성 검사(I1~I5) |
+| `ledger/authorized.ts` | `AuthorizedLedger`: 서명 검증 + 인가(R1~R5, R8, R10, R14) 게이트. 던지지 않고 reason code 반환, nonce/재전송 방지(인메모리). 서명은 출처 증명일 뿐 데이터 진위·ZK가 아님 |
 
 ## 주요 결정
 

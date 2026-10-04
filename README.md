@@ -27,7 +27,7 @@ The included eligibility and payment-capacity rules are illustrative implementat
 | 어테스테이션 **서명 검증** (EIP-712, secp256k1) | **구현됨** (`Eip712AttestationVerifier`): 복구한 서명자가 attesterId에 등록된 주소와 같은지 확인하며, 도메인 분리(name/version/chainId/verifyingContract)를 적용합니다. 위조, 필드 변조, 형식이 잘못되었거나 high-s인 서명, 잘못된 도메인, 미등록 어테스터를 테스트로 다룹니다. 이는 어테스터의 *출처*(누가 서명했는가)를 증명할 뿐 데이터가 *사실*임을 증명하지 않으며, 일반적인 ECDSA 복구이지 영지식 증명이 **아닙니다**. 키 교체/폐기와 어테스터 거버넌스는 **구현되지 않았습니다.** `AllowlistAttestationVerifier`(서명 검사 없음)는 테스트용으로 남아 있으며 deprecated입니다. 보안 감사가 아닙니다. |
 | 영수증 해시 (`proofHash`, 정규화 JSON의 SHA-256) | 구현됨. 영수증 해시일 뿐 **증명이 아님** |
 | **ZK 상태: 미구현** | 어떤 종류의 영지식 증명도 없음 |
-| 참여 원장 이벤트 봉투 + 해시 체인 + 상태 도출 (`packages/domain/src/ledger`, 설계 이슈 #14의 1단계) | 구현됨, 테스트됨. 해시 체인은 변조 **탐지**일 뿐 블록체인도 영지식 증명도 아니며, 체인 끝부분 잘라내기는 외부 체크포인트 없이는 탐지하지 못합니다. **호출자 서명 검증과 인가(R1~R15), 입찰 이벤트, 마감 확정은 구현되지 않았습니다.** 기존 `InMemoryParticipationLedger`는 그대로이며 아직 대체되지 않았습니다 |
+| 참여 원장 이벤트 봉투 + 해시 체인 + 상태 도출 (`packages/domain/src/ledger`, 설계 이슈 #14의 1단계) | 구현됨, 테스트됨. 해시 체인은 변조 **탐지**일 뿐 블록체인도 영지식 증명도 아니며, 체인 끝부분 잘라내기는 외부 체크포인트 없이는 탐지하지 못합니다. **2단계(`AuthorizedLedger`)에서 `LedgerAction` EIP-712 서명 검증과 호출자 인증·인가(R1~R5, R8, R10, R14)를 구현했습니다. R9(키 폐기), R15(입찰 취소), BIND-1 origin, 레지스트리 변경 로그, 영속 nonce 저장소, 마감 확정은 구현되지 않았습니다.** 서명은 출처 증명일 뿐 데이터가 참이라는 보증이 아닙니다 기존 `InMemoryParticipationLedger`는 그대로이며 아직 대체되지 않았습니다 |
 | 블록체인 / 온체인 원장 | **아직 미구현**. '공유 원장'은 인메모리 클래스임 (위 해시 체인도 인메모리) |
 | 영속성 | 미구현 |
 | UI / API 서버 | 미구현 |
@@ -53,7 +53,7 @@ The included eligibility and payment-capacity rules are illustrative implementat
 
 원장에 기록이 없는 것은 `UNKNOWN`입니다. `UNKNOWN`은 면제를 받지 않습니다. `DEMO_RULE_V1`에서는 하위펀드 중 하나라도 `UNKNOWN`이면 입찰을 `UNDERLYING_PARTICIPATION_UNKNOWN`으로 **거부(REJECT)** 합니다. 용량 수치는 산출하지 않으며, 그 펀드에 대해 아무것도 가정하지 않습니다. 해당 펀드의 상태가 기록된 뒤에는 같은 입찰을 다시 검증할 수 있습니다. 소유자가 2026-10-03 이슈 #10에서 결정했고 PR #23으로 병합되었습니다(이전의 '차감+플래그' 동작과 `UNKNOWN_UNDERLYING_DEDUCTED` 플래그는 사라졌습니다). `DEMO_RULE_V2`는 여기에 더해, 노출액이 0원인 하위펀드가 `UNKNOWN`이면 데이터 오류로 보고 `UNDERLYING_ZERO_EXPOSURE_UNKNOWN`으로(일반 거부보다 우선) 거부합니다. reason code가 달라지므로 `DEMO_RULE_V1`을 고치지 않고 새 규칙 버전으로 냈습니다(같은 규칙 ID는 같은 의미).
 
-판정 시점 스냅샷과 마감 확정(finalization) 규칙은 #10에서 계속 설계 중이며, [PR #26 설계안](docs/design/snapshot-and-finalization.md)이 검토 중입니다(미병합). 자세한 내용은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)를 참고하세요.
+판정 시점 스냅샷과 마감 확정(finalization) 규칙의 설계안([docs/design/snapshot-and-finalization.md](docs/design/snapshot-and-finalization.md))은 PR #26~#30으로 병합되었습니다(구현은 아직입니다). 자세한 내용은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)를 참고하세요.
 
 ## 블록체인이 해결하는 것 / 해결하지 못하는 것
 
