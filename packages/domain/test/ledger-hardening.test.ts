@@ -225,7 +225,7 @@ describe("M-3: the ledger id is part of the genesis and of the signature domain"
   });
 
   it("invalid ledger ids and lifetimes are configuration errors (TypeError)", () => {
-    const base = { now: () => NOW, domain: LEDGER_TEST_DOMAIN, principals: principals(), funds: new InMemoryFundRegistry([]), ipos: new InMemoryIpoRegistry([]), registrySeq: 1 };
+    const base = { now: () => NOW, domain: LEDGER_TEST_DOMAIN, principals: principals(), funds: new InMemoryFundRegistry([]), ipos: new InMemoryIpoRegistry([]), registrySeq: 1, maxFindingsPerIpo: 50 };
     expect(() => new AuthorizedLedger({ ...base, ledgerId: "Not Valid", maxRequestTtlMs: HOUR })).toThrow(TypeError);
     expect(() => new AuthorizedLedger({ ...base, ledgerId: "", maxRequestTtlMs: HOUR })).toThrow(TypeError);
     expect(() => new AuthorizedLedger({ ...base, ledgerId: "ledger_a", maxRequestTtlMs: 0 })).toThrow(TypeError);
@@ -257,7 +257,7 @@ describe("OperatorAction binds the actor and the payload (design #38 section 3.2
 });
 
 describe("N-1: no method of the gate is reachable at run time except the public ones", () => {
-  const PUBLIC = ["annulmentAvailable", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed", "ledgerId", "submit"];
+  const PUBLIC = ["annulmentAvailable", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed", "isFinalized", "isKeyRevoked", "ledgerId", "submit"];
 
   it("the prototype exposes exactly the allow-listed names (no decide / authenticate / authorize* / replacementDraft / checkLifetime / submitUnchecked)", () => {
     expect(Object.getOwnPropertyNames(AuthorizedLedger.prototype).sort()).toEqual(PUBLIC);
@@ -270,7 +270,7 @@ describe("N-1: no method of the gate is reachable at run time except the public 
   });
 
   it("the low-level HashChainedLedger has only its documented methods and no static or prototype back door", () => {
-    expect(Object.getOwnPropertyNames(HashChainedLedger.prototype).sort()).toEqual(["append", "appendAtomic", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed"]);
+    expect(Object.getOwnPropertyNames(HashChainedLedger.prototype).sort()).toEqual(["append", "appendAtomic", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed", "isFinalized", "isKeyRevoked"]);
     expect(Object.getOwnPropertyNames(HashChainedLedger).sort()).toEqual(["fromEvents", "length", "name", "prototype"]);
   });
 
@@ -316,7 +316,7 @@ describe("L-A: the gate's class and prototype are frozen", () => {
     }).toThrow(TypeError);
     expect(w.ledger.getState("fund_x", "ipo_1")).toBe("PARTICIPATING");
     // the public-name allow-list is unchanged by freezing
-    expect(Object.getOwnPropertyNames(AuthorizedLedger.prototype).sort()).toEqual(["annulmentAvailable", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed", "ledgerId", "submit"]);
+    expect(Object.getOwnPropertyNames(AuthorizedLedger.prototype).sort()).toEqual(["annulmentAvailable", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed", "isFinalized", "isKeyRevoked", "ledgerId", "submit"]);
   });
 });
 

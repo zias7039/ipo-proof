@@ -203,6 +203,14 @@ export class HashChainedLedger implements ParticipationLookup {
     return this.#projection.isClosed(ipoId);
   }
 
+  isFinalized(ipoId: IpoId): boolean {
+    return this.#projection.isFinalized(ipoId);
+  }
+
+  isKeyRevoked(managerId: string, keyId: string): boolean {
+    return this.#projection.isKeyRevoked(managerId, keyId);
+  }
+
   /** `ledgerSeqAtClose` of a closed IPO, else undefined. */
   cutoffSeq(ipoId: IpoId): number | undefined {
     return this.#projection.cutoffSeq(ipoId);
