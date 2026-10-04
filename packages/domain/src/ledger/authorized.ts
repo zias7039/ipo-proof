@@ -48,6 +48,10 @@
  *  - The sequencer clock is a trusted component, but a clock that goes back is refused
  *    (LEDGER_CLOCK_REGRESSION, N-4) instead of re-opening an elapsed window. The high-water mark is
  *    in memory, like the nonce table.
+ *    A single clock reading far in the future therefore blocks every later request until the real time
+ *    catches up (L-C): that is availability only and intentionally has NO bypass in code (a bypass would be
+ *    the rewind attack). Recovery is operational (wait, or replace the ledger under a new `ledgerId`);
+ *    the procedure is in docs/ARCHITECTURE.md ("원장 운영 메모").
  *  - Every method other than the documented public ones is an ES `#private` method (N-1): the
  *    prototype carries `submit` and the read accessors only.
  *  - A single registry-admin signature revokes a manager key for good (S-3): no quorum, no recovery
@@ -178,15 +182,17 @@ export interface AuthorizedLedgerConfig {
   readonly ledgerId: string;
   /**
    * Longest accepted `expiresAt - now` in milliseconds (M-1). A signed request is therefore valid for a
-   * bounded time only. REQUIRED, no default: the right value is an operational decision (open question).
+   * bounded time only. REQUIRED, no default (there is deliberately no code default). RECOMMENDED: 24 hours
+   * (86_400_000 ms), see "원장 운영 메모" in docs/ARCHITECTURE.md.
    */
   readonly maxRequestTtlMs: number;
   /**
    * Most FINDING_ANNOTATED events accepted per IPO (S-4). REQUIRED positive safe integer, no default (the
-   * right value is an operational decision: open question); unset / NaN / 0 / negative / non-integer throws a
+   * right value is an operational decision; RECOMMENDED: 50, see "원장 운영 메모" in docs/ARCHITECTURE.md); unset / NaN / 0 / negative / non-integer throws a
    * `TypeError` at construction. The count is derived from the chain itself (the accepted FINDING_ANNOTATED
    * events of that IPO), not from a separate counter. It is enforced at THIS gate only: `verifyChain` has no
-   * such rule, so a stored chain with more findings still verifies (same as key revocation, S-5).
+   * such rule, so a stored chain with more findings still verifies (same as key revocation, S-5). Leaving
+   * it out of `verifyChain` is a lead decision (2026-10-05).
    */
   readonly maxFindingsPerIpo: number;
 }
@@ -597,3 +603,9 @@ export class AuthorizedLedger implements ParticipationLookup {
   }
 }
 
+
+// L-A: the class and its prototype are frozen, so other code in the same process cannot replace
+// `getState` / `isClosed` / `submit` to make the gate's read results lie. (Arbitrary code execution in
+// the process is still outside the threat model; this closes the cheap, silent way.)
+Object.freeze(AuthorizedLedger.prototype);
+Object.freeze(AuthorizedLedger);

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { HashChainedLedger, verifyChain } from "../src/ledger/chain.js";
 import { parseLedgerEvent, parseLedgerEventDraft } from "../src/ledger/events.js";
-import { annul, auth, close, lock, must, newLedger, participate, participateBound, plain, SIG, def } from "./ledger-fixtures.js";
+import { TEST_CHAIN_ID, annul, auth, close, lock, must, newLedger, participate, participateBound, plain, SIG, def } from "./ledger-fixtures.js";
 
 const malformed = { ok: false, reasonCode: "EVENT_MALFORMED" };
 const draftOk = (d: unknown) => parseLedgerEventDraft(d).ok;
@@ -48,7 +48,7 @@ describe("strict parsing (fail closed)", () => {
     must(ledger.append(lock("fund_c")));
     must(ledger.append(annul(def(p), { fundId: "fund_a" })));
     must(ledger.append(close(4)));
-    expect(verifyChain(plain(ledger.events())).ok).toBe(true);
+    expect(verifyChain(plain(ledger.events()), { ledgerId: TEST_CHAIN_ID }).ok).toBe(true);
   });
 
   it("rejects non-objects, arrays, missing/extra fields and wrong types", () => {
@@ -156,6 +156,6 @@ describe("strict parsing (fail closed)", () => {
     const raw = def(plain(ledger.events())[0]);
     raw["schemaVersion"] = 2;
     expect(parseLedgerEvent(raw)).toEqual(malformed);
-    expect(HashChainedLedger.fromEvents([raw], () => 1)).toMatchObject({ ok: false, seq: 1 });
+    expect(HashChainedLedger.fromEvents([raw], () => 1, { ledgerId: TEST_CHAIN_ID })).toMatchObject({ ok: false, seq: 1 });
   });
 });

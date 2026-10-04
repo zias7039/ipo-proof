@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { HashChainedLedger, verifyChain } from "../src/ledger/chain.js";
 import { parseLedgerEventDraft, ledgerGenesisHash } from "../src/ledger/events.js";
 import { LEDGER_TEST_ID, annulDraft, closeDraft, CLOSES_AT, finalizeDraft, findingDraft, makeAuthWorld, mustSubmit, recordDraft, rej, revokeDraft } from "./ledger-auth-fixtures.js";
-import { SIG, close, def, must, newLedger, participate, lock, plain } from "./ledger-fixtures.js";
+import { SIG, TEST_CHAIN_ID, close, def, must, newLedger, participate, lock, plain } from "./ledger-fixtures.js";
 
 const H = "c".repeat(64);
 const base = (ipoId: string | null, actorId: string) => ({
@@ -75,7 +75,7 @@ describe("FINDING_ANNOTATED (R17, L-62..L-65): a note on an earlier event, no ef
     expect(ledger.append(finding(target)).ok).toBe(true);
     expect(ledger.append(finding(closeEvent)).ok).toBe(true); // an IPO_CLOSED event may be annotated
     expect(ledger.isFinalized("ipo_1")).toBe(true);
-    expect(verifyChain(plain(ledger.events())).ok).toBe(true);
+    expect(verifyChain(plain(ledger.events()), { ledgerId: TEST_CHAIN_ID }).ok).toBe(true);
   });
 
   it("the target must exist, be earlier, match the hash, belong to the same IPO and not be an annotation (L-64)", () => {
@@ -156,13 +156,13 @@ describe("IPO_FINALIZED (R19, L-70..L-74): only after the close, matching the cu
     expect(ledger.isFinalized("ipo_2")).toBe(false);
     expect(ledger.append(participate("fund_c", "ipo_1"))).toEqual(reject("IPO_ALREADY_CLOSED"));
     expect(ledger.getState("fund_a", "ipo_1")).toBe("PARTICIPATING");
-    expect(verifyChain(plain(ledger.events())).ok).toBe(true);
+    expect(verifyChain(plain(ledger.events()), { ledgerId: TEST_CHAIN_ID }).ok).toBe(true);
   });
 
   it("the head hash of the cut-off for an empty ledger at the close is the genesis hash", () => {
     const { ledger } = newLedger();
     must(ledger.append(close(0, "ipo_1")));
-    expect(ledger.append(finalize({ ledgerSeqAtClose: 0, ledgerHeadHashAtClose: def(ledgerGenesisHash(undefined)) })).ok).toBe(true);
+    expect(ledger.append(finalize({ ledgerSeqAtClose: 0, ledgerHeadHashAtClose: def(ledgerGenesisHash(TEST_CHAIN_ID)) })).ok).toBe(true);
   });
 
   it("wrong ledgerSeqAtClose or ledgerHeadHashAtClose is a cut-off mismatch (T-20)", () => {
@@ -219,8 +219,8 @@ describe("MANAGER_KEY_REVOKED (R18, R9, L-66..L-68): one global event, no IPO", 
     expect(ledger.isKeyRevoked("manager_y", "manager_x")).toBe(false);
     expect(ledger.getState("fund_a", "ipo_1")).toBe("PARTICIPATING");
     expect(ledger.getState("fund_a", "ipo_2")).toBe("PARTICIPATING");
-    expect(verifyChain(plain(ledger.events())).ok).toBe(true);
-    const restored = HashChainedLedger.fromEvents(plain(ledger.events()), () => 0);
+    expect(verifyChain(plain(ledger.events()), { ledgerId: TEST_CHAIN_ID }).ok).toBe(true);
+    const restored = HashChainedLedger.fromEvents(plain(ledger.events()), () => 0, { ledgerId: TEST_CHAIN_ID });
     expect(restored.ok && restored.ledger.isKeyRevoked("manager_x", "manager_x")).toBe(true);
   });
 

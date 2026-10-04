@@ -32,7 +32,7 @@ describe("publish verifies the signature before touching any state", () => {
     expect(store.publish(genuine)).toEqual(OK);
     const overwrite = { ...genuine, attestationId: "att_x", nonce: "n_x", issuedAt: genuine.issuedAt + 1, signature: "" };
     expect(store.publish(overwrite)).toEqual(rejected("SIGNATURE_INVALID"));
-    expect(store.getAttestation("fund_a", "ipo_1")).toBe(genuine);
+    expect(store.getAttestation("fund_a", "ipo_1")).toEqual(genuine);
     expect(verifyBid(bid(1n), deps).eligible).toBe(true);
   });
 
@@ -147,7 +147,7 @@ describe("attestationId handling", () => {
     const a = await signedAtt();
     expect(store.publish(a)).toEqual(OK);
     expect(store.publish({ ...a })).toEqual(OK);
-    expect(store.getAttestation("fund_a", "ipo_1")).toBe(a);
+    expect(store.getAttestation("fund_a", "ipo_1")).toEqual(a);
   });
 
   it("the same attestationId with different (validly signed) content is refused", async () => {

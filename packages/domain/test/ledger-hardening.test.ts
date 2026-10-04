@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import * as barrel from "../src/index.js";
 import { HashChainedLedger, verifyChain } from "../src/ledger/chain.js";
-import { LEDGER_GENESIS_PREV_HASH, computeEventHash, ledgerGenesisHash } from "../src/ledger/events.js";
+import { computeEventHash, ledgerGenesisHash } from "../src/ledger/events.js";
 import type { LedgerEventUnhashed } from "../src/ledger/events.js";
 import { AuthorizedLedger } from "../src/ledger/authorized.js";
 import { PrincipalRole } from "../src/ledger/principals.js";
@@ -25,7 +25,7 @@ import {
   rej,
 } from "./ledger-auth-fixtures.js";
 import { HOUR, NOW } from "./fixtures.js";
-import { def, must, newLedger, participate, lock, plain } from "./ledger-fixtures.js";
+import { TEST_CHAIN_ID, def, must, newLedger, participate, lock, plain } from "./ledger-fixtures.js";
 import { InMemoryFundRegistry, InMemoryIpoRegistry } from "../src/registry.js";
 
 const sub = (w: ReturnType<typeof makeAuthWorld>, r: unknown) => w.ledger.submit(r);
@@ -116,7 +116,7 @@ describe("B-1: the gate's internals and the log cannot be changed at runtime", (
   it("fromEvents rebuilds a ledger whose events() is frozen", () => {
     const { ledger } = newLedger();
     must(ledger.append(participate("fund_b")));
-    const rebuilt = HashChainedLedger.fromEvents(plain(ledger.events()), () => NOW);
+    const rebuilt = HashChainedLedger.fromEvents(plain(ledger.events()), () => NOW, { ledgerId: TEST_CHAIN_ID });
     expect(rebuilt.ok).toBe(true);
     if (!rebuilt.ok) return;
     expect(Object.isFrozen(rebuilt.ledger.events())).toBe(true);
@@ -182,13 +182,13 @@ describe("M-2 / R6b: nothing is accepted once the sequencer clock reached the cl
 });
 
 describe("M-3: the ledger id is part of the genesis and of the signature domain", () => {
-  it("two ledger ids give two genesis values; a missing id keeps the placeholder genesis", () => {
+  it("two ledger ids give two genesis values; there is no placeholder genesis for a missing id (L-B)", () => {
     const a = ledgerGenesisHash("ledger_a");
     const b = ledgerGenesisHash("ledger_b");
     expect(a).toMatch(/^[0-9a-f]{64}$/);
     expect(a).not.toBe(b);
-    expect(a).not.toBe(LEDGER_GENESIS_PREV_HASH);
-    expect(ledgerGenesisHash(undefined)).toBe(LEDGER_GENESIS_PREV_HASH);
+    expect(ledgerGenesisHash(undefined as never)).toBeUndefined();
+    expect(ledgerGenesisHash(null as never)).toBeUndefined();
     expect(ledgerGenesisHash("Not Valid")).toBeUndefined();
     expect(ledgerGenesisHash("")).toBeUndefined();
   });
@@ -218,7 +218,7 @@ describe("M-3: the ledger id is part of the genesis and of the signature domain"
     const stored = plain(a.ledger.events());
     expect(verifyChain(stored, { ledgerId: "ledger_a" }).ok).toBe(true);
     expect(verifyChain(stored, { ledgerId: "ledger_b" })).toEqual({ ok: false, seq: 1, reasonCode: "LEDGER_PREV_HASH_MISMATCH" });
-    expect(verifyChain(stored)).toEqual({ ok: false, seq: 1, reasonCode: "LEDGER_PREV_HASH_MISMATCH" });
+    expect(verifyChain(stored, { ledgerId: TEST_CHAIN_ID })).toEqual({ ok: false, seq: 1, reasonCode: "LEDGER_PREV_HASH_MISMATCH" });
     expect(HashChainedLedger.fromEvents(stored, () => NOW, { ledgerId: "ledger_b" }).ok).toBe(false);
     expect(HashChainedLedger.fromEvents(stored, () => NOW, { ledgerId: "ledger_a" }).ok).toBe(true);
     expect(verifyChain(stored, { ledgerId: "Bad Id" }).ok).toBe(false);
@@ -294,6 +294,32 @@ describe("N-1: no method of the gate is reachable at run time except the public 
   });
 });
 
+describe("L-A: the gate's class and prototype are frozen", () => {
+  it("the classes and prototypes are frozen; replacing or adding a method fails and changes nothing", async () => {
+    for (const k of [AuthorizedLedger, AuthorizedLedger.prototype, HashChainedLedger, HashChainedLedger.prototype]) {
+      expect(Object.isFrozen(k)).toBe(true);
+    }
+    const proto = AuthorizedLedger.prototype as unknown as Record<string, unknown>;
+    const w = makeAuthWorld();
+    mustSubmit(w.ledger, await recordDraft({ nonce: "a" }));
+    expect(() => {
+      proto["getState"] = () => "UNKNOWN"; // QA PoC: make reads lie
+    }).toThrow(TypeError);
+    expect(() => {
+      proto["extra"] = () => 1;
+    }).toThrow(TypeError);
+    expect(() => Object.defineProperty(AuthorizedLedger.prototype, "isClosed", { value: () => false })).toThrow(TypeError);
+    expect(() => Object.defineProperty(AuthorizedLedger.prototype, "submit", { value: () => ({ ok: true }) })).toThrow(TypeError);
+    expect(() => Object.setPrototypeOf(AuthorizedLedger.prototype, {})).toThrow(TypeError);
+    expect(() => {
+      (AuthorizedLedger as unknown as Record<string, unknown>)["decide"] = () => 1;
+    }).toThrow(TypeError);
+    expect(w.ledger.getState("fund_x", "ipo_1")).toBe("PARTICIPATING");
+    // the public-name allow-list is unchanged by freezing
+    expect(Object.getOwnPropertyNames(AuthorizedLedger.prototype).sort()).toEqual(["annulmentAvailable", "constructor", "cutoffSeq", "events", "getState", "getStateAt", "headHash", "isClosed", "isFinalized", "isKeyRevoked", "ledgerId", "submit"]);
+  });
+});
+
 describe("N-2: results are fresh frozen objects; a cached rejection cannot be turned into an acceptance", () => {
   it("mutating a returned rejection fails, and the same request still yields the original rejection", async () => {
     const w = makeAuthWorld();
@@ -350,7 +376,7 @@ describe("N-4: a clock that goes back is refused; recordedAt never decreases", (
 
   it("the low-level chain refuses to append with a smaller recordedAt", () => {
     const clock = { t: 100 };
-    const l = new HashChainedLedger(() => clock.t);
+    const l = new HashChainedLedger(() => clock.t, { ledgerId: TEST_CHAIN_ID });
     must(l.append(participate("fund_a", "ipo_1")));
     clock.t = 99;
     expect(l.append(participate("fund_b", "ipo_1"))).toEqual({ ok: false, reasonCode: "LEDGER_CLOCK_REGRESSION" });
@@ -361,7 +387,7 @@ describe("N-4: a clock that goes back is refused; recordedAt never decreases", (
 
   it("verifyChain rejects a chain whose recordedAt goes down, even if every hash is consistent", () => {
     const clock = { t: 1000 };
-    const l = new HashChainedLedger(() => clock.t);
+    const l = new HashChainedLedger(() => clock.t, { ledgerId: TEST_CHAIN_ID });
     must(l.append(participate("fund_a", "ipo_1")));
     clock.t = 1001;
     must(l.append(participate("fund_b", "ipo_1")));
@@ -370,22 +396,33 @@ describe("N-4: a clock that goes back is refused; recordedAt never decreases", (
     delete body["eventHash"];
     const rewound = { ...body, recordedAt: (def(e1)["recordedAt"] as number) - 1 };
     const rebuilt = { ...rewound, eventHash: computeEventHash(rewound as unknown as LedgerEventUnhashed) };
-    expect(verifyChain([e1, rebuilt])).toEqual({ ok: false, seq: 2, reasonCode: "LEDGER_CLOCK_REGRESSION" });
-    expect(verifyChain([e1, def(e2)]).ok).toBe(true);
+    expect(verifyChain([e1, rebuilt], { ledgerId: TEST_CHAIN_ID })).toEqual({ ok: false, seq: 2, reasonCode: "LEDGER_CLOCK_REGRESSION" });
+    expect(verifyChain([e1, def(e2)], { ledgerId: TEST_CHAIN_ID }).ok).toBe(true);
   });
 });
 
-describe("N-5: a chain checked without a ledgerId says so", () => {
-  it("verifyChain reports ledgerBound = false against the placeholder genesis and true when a ledgerId was given", async () => {
+describe("L-B: a chain is always verified as the log of a named ledger", () => {
+  it("verifyChain and fromEvents refuse a missing ledgerId (no placeholder genesis, no ok:true without a ledger)", async () => {
     const a = makeAuthWorld({ config: { ledgerId: "ledger_a" } });
     mustSubmit(a.ledger, await recordDraft({ nonce: "a", ledgerId: "ledger_a" }));
     const stored = plain(a.ledger.events());
-    expect(verifyChain(stored, { ledgerId: "ledger_a" })).toMatchObject({ ok: true, ledgerBound: true });
-    expect(verifyChain(stored)).toMatchObject({ ok: false }); // not the placeholder genesis
-    const placeholder = new HashChainedLedger(() => NOW);
-    must(placeholder.append(participate("fund_a", "ipo_1")));
-    expect(verifyChain(plain(placeholder.events()))).toMatchObject({ ok: true, ledgerBound: false });
-    expect(verifyChain([])).toMatchObject({ ok: true, ledgerBound: false });
-    expect(verifyChain([], { ledgerId: "ledger_a" })).toMatchObject({ ok: true, ledgerBound: true });
+    expect(verifyChain(stored, { ledgerId: "ledger_a" })).toMatchObject({ ok: true, length: 1 });
+    const missing = { ok: false, seq: 1, reasonCode: "LEDGER_ID_REQUIRED" };
+    expect(verifyChain(stored, {} as never)).toEqual(missing);
+    expect(verifyChain([], {} as never)).toEqual(missing);
+    expect(verifyChain([], undefined as never)).toEqual(missing);
+    expect(verifyChain([], { ledgerId: undefined } as never)).toEqual(missing);
+    expect(verifyChain([], null as never)).toEqual(missing);
+    expect(verifyChain([], { get ledgerId(): never { throw new Error("boom"); } })).toEqual(missing);
+    expect(HashChainedLedger.fromEvents(stored, () => NOW, {} as never)).toEqual(missing);
+    // a wrong or malformed id is a mismatch, not a pass
+    for (const bad of ["ledger_b", "Not Valid", "", null, 5]) {
+      expect(verifyChain(stored, { ledgerId: bad as never }), String(bad)).toEqual({ ok: false, seq: 1, reasonCode: "LEDGER_PREV_HASH_MISMATCH" });
+    }
+  });
+
+  it("the low-level chain cannot even be created without a ledgerId", () => {
+    expect(() => new HashChainedLedger(() => NOW, {} as never)).toThrow(TypeError);
+    expect(() => new HashChainedLedger(() => NOW, undefined as never)).toThrow(TypeError);
   });
 });
