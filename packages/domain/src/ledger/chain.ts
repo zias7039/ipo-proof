@@ -5,8 +5,9 @@
  * in, makes `verifyChain` report the first inconsistent position.
  * WHAT THIS IS NOT: a blockchain, a proof that recorded facts are true (principle B), or a
  * zero-knowledge proof (principle F). It also cannot detect that the END of the chain was cut off
- * or rewritten together with its own hash: that needs an external checkpoint (design §2.5, not
- * implemented). Nobody is authenticated or authorized here: callers must go through AuthorizedLedger
+ * or rewritten together with its own hash unless the caller passes a TRUSTED checkpoint
+ * (`ChainOptions.checkpoints`, design §2.5). Issuing and signature-checking checkpoints is not
+ * implemented here: without one, truncation is not detected. Nobody is authenticated or authorized here: callers must go through AuthorizedLedger
  * (authorized.ts); this class is the low-level, unauthenticated store (see events.ts).
  */
 import { ParticipationState } from "../participation.js";
@@ -34,6 +35,12 @@ export const ChainRejection = {
   LEDGER_EVENT_HASH_MISMATCH: "LEDGER_EVENT_HASH_MISMATCH",
   /** The injected clock did not return a non-negative safe integer. */
   LEDGER_CLOCK_INVALID: "LEDGER_CLOCK_INVALID",
+  /** A trusted checkpoint was given in a malformed shape (not `{seq, eventHash}` with a positive safe integer and 64 lowercase hex). */
+  LEDGER_CHECKPOINT_INVALID: "LEDGER_CHECKPOINT_INVALID",
+  /** The chain is shorter than a trusted checkpoint: the end was cut off (or the checkpoint is from another ledger). */
+  LEDGER_CHECKPOINT_NOT_REACHED: "LEDGER_CHECKPOINT_NOT_REACHED",
+  /** The event at the checkpoint's `seq` has a different hash: the history was rewritten. */
+  LEDGER_CHECKPOINT_MISMATCH: "LEDGER_CHECKPOINT_MISMATCH",
 } as const;
 export type ChainRejection = (typeof ChainRejection)[keyof typeof ChainRejection];
 
@@ -46,6 +53,39 @@ export type ChainVerification =
  * Pure verification of a full chain: for each position, strict shape -> seq -> prevHash -> hash
  * recomputation -> state rules (the fold). Reports the first problem and nothing after it.
  */
+/**
+ * A trusted anchor `{seq, eventHash}` for the chain (design section 2.5, issue #37 section 3).
+ * It is plain data: THIS MODULE DOES NOT CHECK WHO ISSUED IT. The caller must have verified the
+ * operator's signature (or otherwise trust the source) before passing it; a checkpoint from an
+ * untrusted source gives no protection. A chain passes if it is at least `seq` long and its event
+ * at position `seq` has this hash, so a chain that grew after the checkpoint still verifies.
+ */
+export interface ChainCheckpoint {
+  readonly seq: number;
+  readonly eventHash: string;
+}
+
+const CHECKPOINT_HASH = /^[0-9a-f]{64}$/;
+
+/** Reads one checkpoint exactly once, own data properties only (a getter or proxy is rejected). */
+function readCheckpoint(raw: unknown): ChainCheckpoint | undefined {
+  try {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+    const keys = Reflect.ownKeys(raw);
+    if (keys.length !== 2 || !keys.includes("seq") || !keys.includes("eventHash")) return undefined;
+    const sd = Object.getOwnPropertyDescriptor(raw, "seq");
+    const hd = Object.getOwnPropertyDescriptor(raw, "eventHash");
+    // an accessor property has no `value`, so a getter is rejected by the type checks below
+    const seq: unknown = sd?.value;
+    const eventHash: unknown = hd?.value;
+    if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return undefined;
+    if (typeof eventHash !== "string" || !CHECKPOINT_HASH.test(eventHash)) return undefined;
+    return { seq, eventHash };
+  } catch {
+    return undefined;
+  }
+}
+
 export interface ChainOptions {
   /**
    * Identifier of the ledger the chain belongs to (M-3). It selects the genesis `prevHash`
@@ -53,11 +93,43 @@ export interface ChainOptions {
    * LEDGER_PREV_HASH_MISMATCH. Omitted: the constant placeholder genesis (low-level default).
    */
   readonly ledgerId?: string;
+  /**
+   * Trusted anchors (issue #37 section 3). Each is checked against the chain: shorter than the
+   * checkpoint -> LEDGER_CHECKPOINT_NOT_REACHED (truncation), other hash at that position ->
+   * LEDGER_CHECKPOINT_MISMATCH (rewrite), malformed -> LEDGER_CHECKPOINT_INVALID. Omitted or empty:
+   * no anchor, and a cut-off end is NOT detected (see the module comment).
+   */
+  readonly checkpoints?: readonly ChainCheckpoint[];
 }
 
 export function verifyChain(events: readonly unknown[], options: ChainOptions = {}): ChainVerification {
   const genesis = ledgerGenesisHash(options.ledgerId);
   if (genesis === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_PREV_HASH_MISMATCH };
+  // Checkpoints are read and shape-checked before the (expensive) chain walk; the options object is read once.
+  const anchors = new Map<number, string>();
+  let rawCheckpoints: unknown;
+  try {
+    rawCheckpoints = options.checkpoints;
+  } catch {
+    return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_INVALID };
+  }
+  if (rawCheckpoints !== undefined) {
+    let list: unknown[];
+    try {
+      if (!Array.isArray(rawCheckpoints)) throw new TypeError("checkpoints must be an array");
+      list = Array.from(rawCheckpoints as unknown[]);
+    } catch {
+      return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_INVALID };
+    }
+    for (const raw of list) {
+      const cp = readCheckpoint(raw);
+      if (cp === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_INVALID };
+      const known = anchors.get(cp.seq);
+      // two different trusted hashes for one position cannot both hold: fail closed
+      if (known !== undefined && known !== cp.eventHash) return { ok: false, seq: cp.seq, reasonCode: ChainRejection.LEDGER_CHECKPOINT_MISMATCH };
+      anchors.set(cp.seq, cp.eventHash);
+    }
+  }
   const projection = new LedgerProjection();
   let prevHash = genesis;
   for (let i = 0; i < events.length; i++) {
@@ -73,7 +145,14 @@ export function verifyChain(events: readonly unknown[], options: ChainOptions = 
     }
     const applied = projection.apply(event);
     if (!applied.ok) return { ok: false, seq: position, reasonCode: applied.reasonCode };
+    const anchor = anchors.get(position);
+    if (anchor !== undefined && anchor !== eventHash) {
+      return { ok: false, seq: position, reasonCode: ChainRejection.LEDGER_CHECKPOINT_MISMATCH };
+    }
     prevHash = eventHash;
+  }
+  for (const seq of anchors.keys()) {
+    if (seq > events.length) return { ok: false, seq: events.length + 1, reasonCode: ChainRejection.LEDGER_CHECKPOINT_NOT_REACHED };
   }
   if (projection.hasPendingReplacement()) {
     return { ok: false, seq: events.length, reasonCode: ChainRejection.LEDGER_ANNUL_REPLACEMENT_MISSING };
