@@ -61,9 +61,12 @@ export const annul = (
 };
 
 /** Ledger with a deterministic clock that ticks 1 ms per event. */
+/** Ledger id of the low-level chain tests (a chain is always the log of a named ledger, L-B). */
+export const TEST_CHAIN_ID = "ledger_chain_test";
+
 export function newLedger(start = 1_800_000_000_000): { ledger: HashChainedLedger; clock: { t: number } } {
   const clock = { t: start };
-  return { ledger: new HashChainedLedger(() => clock.t++), clock };
+  return { ledger: new HashChainedLedger(() => clock.t++, { ledgerId: TEST_CHAIN_ID }), clock };
 }
 
 export function must(r: { ok: boolean; events?: readonly LedgerEvent[] }): readonly LedgerEvent[] {

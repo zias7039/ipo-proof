@@ -6,17 +6,18 @@
  * WHAT THIS IS NOT: a blockchain, a proof that recorded facts are true (principle B), or a
  * zero-knowledge proof (principle F). It also cannot detect that the END of the chain was cut off
  * or rewritten together with its own hash: that needs an external checkpoint (design §2.5, not
- * implemented). Nobody is authenticated or authorized here (see events.ts).
+ * implemented). Nobody is authenticated or authorized here: callers must go through AuthorizedLedger
+ * (authorized.ts); this class is the low-level, unauthenticated store (see events.ts).
  */
 import { ParticipationState } from "../participation.js";
 import type { ParticipationLookup } from "../participation.js";
 import type { FundId, IpoId } from "../model.js";
 import { LedgerProjection, LedgerRejection } from "./derive.js";
 import {
-  LEDGER_GENESIS_PREV_HASH,
   LEDGER_SCHEMA_VERSION,
   ParseRejection,
   computeEventHash,
+  ledgerGenesisHash,
   parseLedgerEvent,
   parseLedgerEventDraft,
 } from "./events.js";
@@ -33,11 +34,22 @@ export const ChainRejection = {
   LEDGER_EVENT_HASH_MISMATCH: "LEDGER_EVENT_HASH_MISMATCH",
   /** The injected clock did not return a non-negative safe integer. */
   LEDGER_CLOCK_INVALID: "LEDGER_CLOCK_INVALID",
+  /**
+   * `recordedAt` is smaller than the previous event's (N-4): the sequencer clock went back, or the
+   * chain was rebuilt with a rewound clock. Refused when appending and when verifying.
+   */
+  LEDGER_CLOCK_REGRESSION: "LEDGER_CLOCK_REGRESSION",
+  /** `verifyChain` was called without a `ledgerId` (L-B): a chain is only meaningful as the log of a named ledger. */
+  LEDGER_ID_REQUIRED: "LEDGER_ID_REQUIRED",
 } as const;
 export type ChainRejection = (typeof ChainRejection)[keyof typeof ChainRejection];
 
 export type ChainVerification =
-  | { readonly ok: true; readonly length: number; readonly headHash: string }
+  | {
+      readonly ok: true;
+      readonly length: number;
+      readonly headHash: string;
+    }
   /** `seq` is the 1-based position of the first inconsistent event (the position it should have), not necessarily its own `seq` field. */
   | { readonly ok: false; readonly seq: number; readonly reasonCode: ChainRejection };
 
@@ -45,9 +57,29 @@ export type ChainVerification =
  * Pure verification of a full chain: for each position, strict shape -> seq -> prevHash -> hash
  * recomputation -> state rules (the fold). Reports the first problem and nothing after it.
  */
-export function verifyChain(events: readonly unknown[]): ChainVerification {
+export interface ChainOptions {
+  /**
+   * Identifier of the ledger the chain belongs to (M-3). It selects the genesis `prevHash`
+   * (`ledgerGenesisHash`); a chain built for another ledger id fails at position 1 with
+   * LEDGER_PREV_HASH_MISMATCH. REQUIRED (L-B): there is no placeholder genesis, so a verified chain is
+   * always shown to belong to the ledger the caller named. A missing id is LEDGER_ID_REQUIRED.
+   */
+  readonly ledgerId: string;
+}
+
+export function verifyChain(events: readonly unknown[], options: ChainOptions): ChainVerification {
+  let ledgerId: unknown;
+  try {
+    ledgerId = (options as ChainOptions | undefined)?.ledgerId; // read once; untyped callers may pass anything
+  } catch {
+    ledgerId = undefined;
+  }
+  if (ledgerId === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_ID_REQUIRED };
+  const genesis = ledgerGenesisHash(ledgerId as string);
+  if (genesis === undefined) return { ok: false, seq: 1, reasonCode: ChainRejection.LEDGER_PREV_HASH_MISMATCH };
   const projection = new LedgerProjection();
-  let prevHash = LEDGER_GENESIS_PREV_HASH;
+  let prevHash = genesis;
+  let prevRecordedAt = 0;
   for (let i = 0; i < events.length; i++) {
     const position = i + 1;
     const parsed = parseLedgerEvent(events[i]);
@@ -59,9 +91,11 @@ export function verifyChain(events: readonly unknown[]): ChainVerification {
     if (computeEventHash(unhashed as LedgerEventUnhashed) !== eventHash) {
       return { ok: false, seq: position, reasonCode: ChainRejection.LEDGER_EVENT_HASH_MISMATCH };
     }
+    if (event.recordedAt < prevRecordedAt) return { ok: false, seq: position, reasonCode: ChainRejection.LEDGER_CLOCK_REGRESSION };
     const applied = projection.apply(event);
     if (!applied.ok) return { ok: false, seq: position, reasonCode: applied.reasonCode };
     prevHash = eventHash;
+    prevRecordedAt = event.recordedAt;
   }
   if (projection.hasPendingReplacement()) {
     return { ok: false, seq: events.length, reasonCode: ChainRejection.LEDGER_ANNUL_REPLACEMENT_MISSING };
@@ -78,26 +112,43 @@ export type AppendResult =
  * the injected clock (the sequencer clock, design D14-Q4). Implements `ParticipationLookup`, so it
  * can be handed to the rule engine and `verifyBid`; no record is UNKNOWN, never "non-participating".
  *
- * Callers must already have authenticated and authorized a draft (not done here).
+ * Callers must already have authenticated and authorized a draft (not done here); not exported from the package barrel.
  */
 export class HashChainedLedger implements ParticipationLookup {
-  private chain: readonly LedgerEvent[] = [];
-  private projection = new LedgerProjection();
+  // ECMAScript private fields (not just TS `private`): not enumerable, not reachable by untyped code.
+  // `#chain` is replaced by a NEW frozen array on every commit, so an array handed out earlier is a
+  // stable snapshot and can never be used to alter the log (#37 section 2).
+  #chain: readonly LedgerEvent[] = Object.freeze([]);
+  #projection = new LedgerProjection();
+  readonly #now: () => number;
+  readonly #genesis: string;
 
-  constructor(private readonly now: () => number) {}
+  /** Throws `TypeError` for a missing or invalid `ledgerId` (deployment configuration, not attacker input). */
+  constructor(now: () => number, options: ChainOptions) {
+    const genesis = ledgerGenesisHash(options.ledgerId);
+    if (genesis === undefined) throw new TypeError("ledgerId must be a synthetic identifier");
+    this.#now = now;
+    this.#genesis = genesis;
+  }
 
   /** Rebuilds a ledger from stored events after a full `verifyChain`. */
-  static fromEvents(events: readonly unknown[], now: () => number): { readonly ok: true; readonly ledger: HashChainedLedger } | { readonly ok: false; readonly seq: number; readonly reasonCode: ChainRejection } {
-    const verified = verifyChain(events);
+  static fromEvents(
+    events: readonly unknown[],
+    now: () => number,
+    options: ChainOptions,
+  ): { readonly ok: true; readonly ledger: HashChainedLedger } | { readonly ok: false; readonly seq: number; readonly reasonCode: ChainRejection } {
+    const verified = verifyChain(events, options);
     if (!verified.ok) return verified;
-    const ledger = new HashChainedLedger(now);
+    const ledger = new HashChainedLedger(now, options);
+    const rebuilt: LedgerEvent[] = [];
     for (const raw of events) {
       const parsed = parseLedgerEvent(raw);
-      if (!parsed.ok) return { ok: false, seq: ledger.chain.length + 1, reasonCode: parsed.reasonCode };
-      ledger.chain = [...ledger.chain, parsed.value];
-      const applied = ledger.projection.apply(parsed.value);
+      if (!parsed.ok) return { ok: false, seq: rebuilt.length + 1, reasonCode: parsed.reasonCode };
+      rebuilt.push(parsed.value);
+      const applied = ledger.#projection.apply(parsed.value);
       if (!applied.ok) return { ok: false, seq: parsed.value.seq, reasonCode: applied.reasonCode };
     }
+    ledger.#chain = Object.freeze(rebuilt);
     return { ok: true, ledger };
   }
 
@@ -112,19 +163,20 @@ export class HashChainedLedger implements ParticipationLookup {
    */
   appendAtomic(drafts: readonly unknown[]): AppendResult {
     if (drafts.length === 0) return { ok: false, reasonCode: ChainRejection.EVENT_MALFORMED };
-    const scratch = this.projection.clone();
+    const scratch = this.#projection.clone();
     const added: LedgerEvent[] = [];
-    let prev = this.chain[this.chain.length - 1];
+    let prev = this.#chain[this.#chain.length - 1];
     for (const raw of drafts) {
       const parsed = parseLedgerEventDraft(raw);
       if (!parsed.ok) return { ok: false, reasonCode: parsed.reasonCode };
-      const recordedAt = this.now();
+      const recordedAt = this.#now();
       if (!Number.isSafeInteger(recordedAt) || recordedAt < 0) return { ok: false, reasonCode: ChainRejection.LEDGER_CLOCK_INVALID };
+      if (prev !== undefined && recordedAt < prev.recordedAt) return { ok: false, reasonCode: ChainRejection.LEDGER_CLOCK_REGRESSION };
       const unhashed = {
         ...parsed.value,
         schemaVersion: LEDGER_SCHEMA_VERSION,
         seq: (prev?.seq ?? 0) + 1,
-        prevHash: prev?.eventHash ?? LEDGER_GENESIS_PREV_HASH,
+        prevHash: prev?.eventHash ?? this.#genesis,
         recordedAt,
       } as LedgerEventUnhashed;
       const event = Object.freeze({ ...unhashed, eventHash: computeEventHash(unhashed) }) as LedgerEvent;
@@ -134,35 +186,42 @@ export class HashChainedLedger implements ParticipationLookup {
       prev = event;
     }
     if (scratch.hasPendingReplacement()) return { ok: false, reasonCode: ChainRejection.LEDGER_ANNUL_REPLACEMENT_MISSING };
-    this.chain = [...this.chain, ...added];
-    this.projection = scratch;
+    this.#chain = Object.freeze([...this.#chain, ...added]);
+    this.#projection = scratch;
     return { ok: true, events: Object.freeze(added) };
   }
 
   getState(fundId: FundId, ipoId: IpoId): ParticipationState {
-    return this.projection.getState(fundId, ipoId);
+    return this.#projection.getState(fundId, ipoId);
   }
 
   getStateAt(fundId: FundId, ipoId: IpoId, atSeq: number): ParticipationState {
-    return this.projection.getStateAt(fundId, ipoId, atSeq);
+    return this.#projection.getStateAt(fundId, ipoId, atSeq);
   }
 
   isClosed(ipoId: IpoId): boolean {
-    return this.projection.isClosed(ipoId);
+    return this.#projection.isClosed(ipoId);
   }
 
   /** `ledgerSeqAtClose` of a closed IPO, else undefined. */
   cutoffSeq(ipoId: IpoId): number | undefined {
-    return this.projection.cutoffSeq(ipoId);
+    return this.#projection.cutoffSeq(ipoId);
   }
 
-  /** The committed events (frozen objects), oldest first. */
+  /**
+   * The committed events (frozen objects), oldest first, as a FROZEN array. Modifying it throws
+   * and never changes the ledger; a later commit produces a new array and leaves this one as it was.
+   */
   events(): readonly LedgerEvent[] {
-    return this.chain;
+    return this.#chain;
   }
 
-  /** Hash of the last event, or the genesis value for an empty chain. */
+  /** Hash of the last event, or the genesis value of this ledger for an empty chain. */
   headHash(): string {
-    return this.chain[this.chain.length - 1]?.eventHash ?? LEDGER_GENESIS_PREV_HASH;
+    return this.#chain[this.#chain.length - 1]?.eventHash ?? this.#genesis;
   }
 }
+
+// L-A: same hardening as AuthorizedLedger (the low-level chain is not exported from the barrel).
+Object.freeze(HashChainedLedger.prototype);
+Object.freeze(HashChainedLedger);

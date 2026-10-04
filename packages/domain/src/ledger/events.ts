@@ -7,9 +7,12 @@
  *    (principle F; ZK STATUS: NOT IMPLEMENTED).
  *  - This module checks STRUCTURE only. `authorization` / `coAuthorizations` are stored and
  *    hashed but their signatures are NOT verified here, and nobody is authorized by this module.
- *    Signature verification (EIP-712 LedgerAction) and the authorization rules R1-R15 are separate
- *    steps. Until they exist, a ledger built from this module must not accept input from
- *    untrusted callers directly.
+ *    Signature verification (EIP-712 LedgerAction, signing.ts) and the authorization rules live in
+ *    AuthorizedLedger (authorized.ts), which is the write entry point for untrusted callers.
+ *    HashChainedLedger itself stays low-level and unauthenticated: it is NOT exported from the
+ *    package barrel (ledger/index.ts); only AuthorizedLedger is. The parse functions and
+ *    verifyChain here are read-only format/chain checks: they authenticate nobody. Still missing: R9 (key revocation), R15 (bid withdrawal, needs a bid store), BIND-1
+ *    origins, a registry change log, a persistent nonce store, external checkpoints.
  *  - Events carry no amounts and no capacity (principle E). The payload of every event type is a
  *    closed allowlist: any extra field (for example an amount) makes the event malformed.
  */
@@ -26,11 +29,19 @@ export const LEDGER_SCHEMA_VERSION = 1;
 /** Domain tag mixed into every event hash (design §2.2). */
 export const LEDGER_EVENT_HASH_DOMAIN = "ipo-proof/ledger-event/v1";
 
+/** Domain tag of the ledger-specific genesis value (M-3). */
+export const LEDGER_GENESIS_DOMAIN = "ipo-proof/ledger-genesis/v1";
+
 /**
- * `prevHash` of the event with seq = 1. The design says "fixed genesis value" without naming it
- * (open question); 64 zero hex digits is a placeholder that only has to be a constant.
+ * The `prevHash` of seq = 1: `sha256(canonicalJson({domain: "ipo-proof/ledger-genesis/v1", ledgerId}))`,
+ * so two ledgers (staging / production / per IPO) never share a genesis and a chain cannot be replayed
+ * into another ledger. `ledgerId` is REQUIRED (there is no placeholder genesis any more: security QA L-B).
+ * Returns `undefined` for anything that is not a synthetic identifier.
  */
-export const LEDGER_GENESIS_PREV_HASH = "0".repeat(64);
+export function ledgerGenesisHash(ledgerId: string): string | undefined {
+  if (!isSyntheticId(ledgerId)) return undefined;
+  return sha256CanonicalHex({ domain: LEDGER_GENESIS_DOMAIN, ledgerId });
+}
 
 export const LedgerEventType = {
   PARTICIPATION_RECORDED: "PARTICIPATION_RECORDED",
@@ -154,7 +165,7 @@ export type ParseRejection = (typeof ParseRejection)[keyof typeof ParseRejection
 export type ParseResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reasonCode: ParseRejection };
 
 const HEX64 = /^[0-9a-f]{64}$/;
-const SIGNATURE = /^0x[0-9a-fA-F]{130}$/; // 65 bytes, as in the EIP-712 signature format of the design (format only)
+const SIGNATURE = /^0x[0-9a-f]{130}$/; // 65 bytes, LOWERCASE hex only (design #38 §2.2.1): one encoding per signature, so one eventHash
 const SCHEME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const NONCE = /^[A-Za-z0-9_-]{1,128}$/;
 const MALFORMED = { ok: false, reasonCode: ParseRejection.EVENT_MALFORMED } as const;
@@ -263,7 +274,7 @@ function closedPayload(v: unknown): IpoClosedPayload {
 const BODY_KEYS = ["eventType", "ipoId", "subjectFundId", "actorId", "authorization", "coAuthorizations", "payload", "registrySeq", "requestedAt"];
 const CHAIN_KEYS = ["schemaVersion", "seq", "prevHash", "recordedAt"];
 
-function bodyOf(r: Record<string, unknown>): LedgerEventBody {
+function bodyOf(r: Record<string, unknown>, allowMissingApproval = false): LedgerEventBody {
   const eventType = r["eventType"];
   if (typeof eventType !== "string") return bad();
   if (!Object.hasOwn(LedgerEventType, eventType)) return bad();
@@ -287,7 +298,8 @@ function bodyOf(r: Record<string, unknown>): LedgerEventBody {
       const payload = annulledPayload(r["payload"]);
       // R10 / R15 shape: a correction needs exactly one approver co-signature; a bid withdrawal needs none.
       const expected = payload.reason === AnnulmentReason.BID_WITHDRAWN ? 0 : 1;
-      if (common.coAuthorizations.length !== expected) return bad();
+      const missingAllowed = allowMissingApproval && expected === 1 && common.coAuthorizations.length === 0;
+      if (common.coAuthorizations.length !== expected && !missingAllowed) return bad();
       return { ...common, eventType, subjectFundId: id(r["subjectFundId"]), payload };
     }
     case LedgerEventType.IPO_CLOSED:
@@ -311,11 +323,20 @@ function parseWith<T>(fn: () => T): ParseResult<T> {
   }
 }
 
+export interface ParseDraftOptions {
+  /**
+   * Let a correction (MISTAKEN_ENTRY / KEY_COMPROMISE) arrive WITHOUT its approver co-signature, so
+   * the authorization gate can answer LEDGER_ANNUL_COSIGN_REQUIRED instead of EVENT_MALFORMED.
+   * Never use the result of such a parse to append: the ledger itself always re-parses strictly.
+   */
+  readonly allowMissingApproval?: boolean;
+}
+
 /** Parses a caller's draft. Chain fields (seq, prevHash, recordedAt, eventHash, schemaVersion) are NOT accepted from callers. */
-export function parseLedgerEventDraft(input: unknown): ParseResult<LedgerEventDraft> {
+export function parseLedgerEventDraft(input: unknown, options: ParseDraftOptions = {}): ParseResult<LedgerEventDraft> {
   return parseWith(() => {
     const r = record(input, BODY_KEYS);
-    return Object.freeze(bodyOf(r));
+    return Object.freeze(bodyOf(r, options.allowMissingApproval === true));
   });
 }
 

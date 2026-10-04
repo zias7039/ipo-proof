@@ -25,12 +25,16 @@ AttestationVerifier, Clock ────────┘                          
 | `rules.ts` | `DEMO_RULE_V1`(동결), `DEMO_RULE_V2`와 규칙 버전 디스패치 |
 | `attestation.ts` | `AttestationVerifier` 인터페이스, 허용목록 검증기(서명 검사 없음, deprecated), 인메모리 어테스테이션/폐기/nonce 저장소 |
 | `eip712.ts` | `CapacityAttestation`용 EIP-712 typed data, `Eip712AttestationVerifier`(어테스터 레지스트리 + 서명 검사) |
+| `eip712-encoding.ts` | EIP-712 저수준 인코딩 헬퍼(`eip712.ts`와 `ledger/signing.ts`가 공유, 동작 변경 없음) |
 | `registry.ts` | Fund·IPO 레지스트리 인터페이스와 인메모리 구현 |
 | `hash.ts` | 정규화(canonical) JSON과 SHA-256 |
 | `verify.ts` | `verifyBid`, `BidVerification`, reason code, 영수증 생성 |
-| `ledger/events.ts` | 참여 원장 이벤트 봉투(`LedgerEvent`)와 엄격한 파서. 이벤트에는 금액이 없고 payload는 허용 목록으로 닫혀 있음. 서명은 형식만 검사하며 **검증하지 않음** |
+| `ledger/events.ts` | 참여 원장 이벤트 봉투(`LedgerEvent`)와 엄격한 파서. 이벤트에는 금액이 없고 payload는 허용 목록으로 닫혀 있음. 서명은 이 모듈에서 형식만 검사하며 검증은 `ledger/authorized.ts`가 함 |
 | `ledger/derive.ts` | 이벤트를 접어(fold) 유효 상태를 도출(`LedgerProjection`, `getStateAt`). 상태 전이는 기존 `transition()`을 재사용하고 `EVENT_ANNULLED`로만 UNKNOWN으로 되돌림 |
-| `ledger/chain.ts` | 해시 체인(`verifyChain`, `HashChainedLedger`). 변조 **탐지**일 뿐 블록체인도 ZK도 아님. 호출자 인증·인가는 아직 없음 |
+| `ledger/chain.ts` | 해시 체인(`verifyChain`, `HashChainedLedger`). 변조 **탐지**일 뿐 블록체인도 ZK도 아님. `HashChainedLedger`는 저수준·무인증 저장소라 패키지 배럴에서 내렸고(상대 경로로만 import), 내부 상태는 `#private`, `events()`는 동결된 배열을 반환함. genesis 해시는 `ledgerId`에서 파생되며 `ledgerId`는 **필수**(`verifyChain`은 없으면 `LEDGER_ID_REQUIRED`, 자리표시자 genesis 없음). 클래스와 프로토타입은 동결됨 |
+| `ledger/signing.ts` | 원장 EIP-712 typed data(`LedgerAction`, `LedgerAnnulment`, `AnnulmentApproval`, `OperatorAction`), 도메인(name·version·chainId·verifyingContract·salt) 분리. `salt`는 `ledgerId`에서 파생한 genesis 해시. `OperatorAction`은 actorId·payloadDigest를 포함. 서명 대상에 금액 없음 |
+| `ledger/principals.ts` | 서명자 → 역할/주체 레지스트리(주입, 중복·키 재사용 거부), 정정 승인자 독립성 검사(I1~I5) |
+| `ledger/authorized.ts` | `AuthorizedLedger`: 서명 검증 + 인가(R1~R5, R6b, R8, R10, R14) 게이트. 던지지 않고 reason code 반환, nonce/재전송 방지(인메모리, 인증 통과 후 거부돼도 소비), 최대 유효기간. 내부 상태 `#private`+동결(클래스·프로토타입도 `Object.freeze`). 서명은 출처 증명일 뿐 데이터 진위·ZK가 아님 |
 
 ## 주요 결정
 
@@ -73,6 +77,21 @@ AttestationVerifier, Clock ────────┘                          
 **영수증 해시.** `proofHash = sha256(canonicalJson(receipt))`이고 `proofHashKind = "SHA256_RECEIPT_NOT_A_ZK_PROOF"`이다. 영수증에는 kind, version, fund id, IPO id, 규칙 버전, attestation id, attester id, 적격 여부, reason code, flags, 검증 시각이 들어간다. 입찰 금액, 총 용량, 노출, 조정 용량, 서명은 의도적으로 제외한다. 엔트로피가 낮은 금액의 해시는 무차별 대입으로 풀릴 수 있기 때문이다. 이것은 "이 검증자가 이 결과를 보고했다"는 증거일 뿐, 그 결과가 맞다는 증명이 아니다.
 
 **검사 순서**(처음 실패한 것이 결정)는 `verify.ts`의 `verifyBid` 주석에 문서화되어 있다.
+
+## 원장 운영 메모 (권장 설정값, 시계 점프 복구)
+
+**권장 설정값.** 코드에는 기본값이 없고 설정은 필수다(미설정·NaN·0·음수는 `TypeError`). 아래는 문서상의 **권장값**일 뿐이다.
+| 설정 | 권장값 | 비고 |
+|---|---|---|
+| `maxRequestTtlMs` | 24시간 = `86_400_000` | 서명 요청의 최대 유효기간. 짧을수록 유출된 서명 요청의 위험 구간이 줄고, 너무 짧으면 서명·전달 지연으로 요청이 만료된다. 리드 결정(2026-10-05) |
+| `maxFindingsPerIpo` (#47) | 50 | IPO당 `FINDING_ANNOTATED` 상한. 게이트에서만 강제하고 `verifyChain`에는 적용하지 않는다(리드 결정) |
+
+**시계 점프와 high-water mark (보안QA L-C).** 시퀀서 시계는 신뢰 구성요소이고, 게이트는 읽은 시각의 최대값(`#highWater`, 인메모리)보다 작은 시각을 `LEDGER_CLOCK_REGRESSION`으로 거부한다(마감 창을 시계 되감기로 다시 여는 것을 막기 위한 fail-closed 선택). 그래서 시계가 **한 번이라도 큰 미래 값**을 돌려주면 시계가 정상으로 돌아온 뒤에도, 정상 시각이 high-water를 넘을 때까지 모든 요청이 거부된다(가용성 상실, 위조는 아님). 서명 없는 요청은 이 값을 올리지 못하고 서버 시계만 반영된다. 코드로 high-water를 낮추거나 우회하는 경로는 **의도적으로 만들지 않았다**(그 경로가 곧 되감기 공격 경로가 된다). 운영 절차:
+1. **원인 확인.** 시계 소스(NTP 등)의 점프를 확인하고 고친다. 점프가 짧은 시간(요청 유효기간보다 짧음) 안에 해소되는 값이면 **기다리면** 자동으로 풀린다. 기다리는 동안 요청은 거부되지만 nonce는 소비되지 않으므로 같은 서명 요청을 나중에 그대로 다시 낼 수 있다(만료 전까지).
+2. **기다릴 수 없을 만큼 큰 점프(수 시간~)이거나, 미래 `recordedAt`을 가진 이벤트가 이미 체인에 기록된 경우**: 그 체인에는 이후 정상 시각의 이벤트를 붙일 수 없다(`recordedAt` 비감소 규칙). 현재 PoC에는 체인을 저장소에서 `AuthorizedLedger`로 복원하는 경로와 nonce·high-water 영속이 없으므로, 복구는 **새 `ledgerId`로 새 원장을 만들고** 기존 체인은 `verifyChain(events, {ledgerId: <이전 id>})`로 검증 가능한 감사용 기록으로 보관하는 것뿐이다. 필요한 기록은 새 도메인(새 `ledgerId`가 서명 도메인 salt에 들어감)으로 다시 서명받는다. 이전 원장용 서명은 새 원장에서 무효다.
+3. **같은 `ledgerId`로 프로세스만 재시작하지 말 것.** 재시작은 high-water와 nonce 표를 지우지만 체인도 비게 되며(복원 경로 없음), 같은 `ledgerId`와 아직 만료되지 않은 서명 요청이 재생될 위험이 있다. 같은 id를 다시 쓰려면 이전 요청의 `maxRequestTtlMs`가 모두 지난 뒤에만 한다.
+4. **예방.** 시계 소스를 하나로 고정하고 단조 증가(slew)를 보장하며, 시계 점프를 모니터링·알림한다. 점프 시 `closesAt`을 넘겨 읽히면 정당한 기록이 `IPO_WINDOW_ELAPSED`로 거부될 수 있다(fail-closed).
+5. nonce·high-water의 영속화와 체인 복원이 구현되면(후속) 이 절차를 갱신한다.
 
 ## 이번 조각에 없는 것
 
