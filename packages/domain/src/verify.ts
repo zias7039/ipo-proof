@@ -1,13 +1,14 @@
-import type { AttestationSource, AttestationVerifier, NonceLookup, RevocationLookup } from "./attestation.js";
+import { snapshotAttestation } from "./attestation.js";
+import type { AttestationSource, AttestationVerifier, AttesterVerificationResult, NonceLookup, RevocationLookup } from "./attestation.js";
 import { sha256CanonicalHex } from "./hash.js";
 import type { CapacityAttestation, FundId, IpoId, RuleVersion } from "./model.js";
 import { isSyntheticId } from "./model.js";
 import { isKrw } from "./money.js";
 import type { Krw } from "./money.js";
-import { ParticipationState } from "./participation.js";
+import { ParticipationState, readParticipationState } from "./participation.js";
 import type { ParticipationLookup } from "./participation.js";
 import type { FundRegistry, IpoRegistry } from "./registry.js";
-import { UndeterminedCause, evaluateRule, isSupportedRuleVersion } from "./rules.js";
+import { UndeterminedCause, evaluateRule, getRegisteredRuleVersion } from "./rules.js";
 import type { RuleFlag } from "./rules.js";
 
 /**
@@ -28,7 +29,13 @@ export const BidReason = {
   IPO_NOT_FOUND: "IPO_NOT_FOUND",
   IPO_NOT_OPEN: "IPO_NOT_OPEN",
   NON_PARTICIPATION_LOCK_ACTIVE: "NON_PARTICIPATION_LOCK_ACTIVE",
+  /**
+   * The active rule version is missing, not a registered id, or carries parameters that differ from the
+   * registered definition (for example a tampered or non-finite `maxAttestationAgeMs`).
+   */
   RULE_VERSION_UNSUPPORTED: "RULE_VERSION_UNSUPPORTED",
+  /** The bidding fund's own participation lookup threw or returned something other than the three known states. */
+  PARTICIPATION_LOOKUP_INVALID: "PARTICIPATION_LOOKUP_INVALID",
   ATTESTATION_NOT_FOUND: "ATTESTATION_NOT_FOUND",
   ATTESTATION_SUBJECT_MISMATCH: "ATTESTATION_SUBJECT_MISMATCH",
   ATTESTATION_MALFORMED: "ATTESTATION_MALFORMED",
@@ -126,17 +133,36 @@ export function buildReceipt(fields: ReceiptFields): Record<string, unknown> {
 
 const REQUEST_KEYS = ["bidAmount", "fundId", "ipoId"];
 
+/** Receipt placeholder for a missing or non-string active rule id. Not a valid id (see `isSyntheticId`), so it cannot collide with a real rule. */
+export const INVALID_RULE_VERSION_ID = "<invalid>";
+
+/** The caller-supplied rule version, read ONCE. Fields are unknown until compared with the registry. */
+function readActiveRule(v: unknown): { readonly id: unknown; readonly maxAttestationAgeMs: unknown } {
+  try {
+    // undefined / null throw on access and a primitive has neither field: all end up in the catch / as undefined.
+    const r = v as Record<string, unknown>;
+    return { id: r["id"], maxAttestationAgeMs: r["maxAttestationAgeMs"] };
+  } catch {
+    return { id: undefined, maxAttestationAgeMs: undefined };
+  }
+}
+
 /**
  * Pure verification of a bid against injected state. First failing check wins; order:
- *  request shape -> bid amount -> fund registered -> IPO exists/open -> rule version supported
- *  -> subject's own lock -> attestation present/subject/shape -> rule version match
+ *  request shape -> bid amount -> fund registered -> IPO exists/open -> rule version supported and its
+ *  parameters equal the registered definition (RULE_VERSION_UNSUPPORTED otherwise)
+ *  -> subject's own lock (an invalid lookup answer is PARTICIPATION_LOOKUP_INVALID) -> attestation present/subject/shape -> rule version match
  *  -> attester authorization + signature (per injected verifier) -> revoked -> validity window
  *  (not-yet-valid / expired / stale) -> nonce replay -> underlying exposure completeness
  *  -> rule evaluation (rejects if any underlying participation is UNKNOWN; DEMO_RULE_V2: a 0 KRW UNKNOWN is reported first as a data error) -> bid vs adjusted capacity.
  */
 export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerification {
   const verifiedAt = deps.clock.now();
-  const ruleVersion = deps.activeRuleVersion.id;
+  // The active rule is read once. Only its id is trusted to SELECT a rule; the stale limit comes from
+  // the registered definition, and a caller object whose parameters differ from it is refused below.
+  const active = readActiveRule(deps.activeRuleVersion);
+  const registered = getRegisteredRuleVersion(active.id);
+  const ruleVersion = typeof active.id === "string" ? active.id : INVALID_RULE_VERSION_ID;
   // Context accumulated while checking; only non-sensitive parts end up in the receipt.
   const ctx: { attestation: CapacityAttestation | undefined; flags: readonly RuleFlag[] } = {
     attestation: undefined,
@@ -149,8 +175,8 @@ export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerificatio
       fundId: isRecord(request) ? request["fundId"] : undefined,
       ipoId: isRecord(request) ? request["ipoId"] : undefined,
       ruleVersion,
-      attestationId: ctx.attestation?.attestationId ?? null,
-      attesterId: ctx.attestation?.attesterId ?? null,
+      attestationId: typeof ctx.attestation?.attestationId === "string" ? ctx.attestation.attestationId : null,
+      attesterId: typeof ctx.attestation?.attesterId === "string" ? ctx.attestation.attesterId : null,
       eligible,
       reasonCode,
       flags: ctx.flags,
@@ -190,17 +216,28 @@ export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerificatio
   if (verifiedAt < ipo.subscriptionOpensAt || verifiedAt >= ipo.subscriptionClosesAt) {
     return finish(BidReason.IPO_NOT_OPEN);
   }
-  if (!isSupportedRuleVersion(ruleVersion)) return finish(BidReason.RULE_VERSION_UNSUPPORTED);
+  // Unregistered id, or parameters that differ from the registered definition (NaN, Infinity, undefined,
+  // negative, non-integer, or simply a different number): refuse. Object.is so that NaN never matches.
+  if (registered === undefined || !Object.is(active.maxAttestationAgeMs, registered.maxAttestationAgeMs)) {
+    return finish(BidReason.RULE_VERSION_UNSUPPORTED);
+  }
+  const maxAttestationAgeMs = registered.maxAttestationAgeMs;
 
-  // 3. The bidding fund's own lock. Own UNKNOWN is allowed (not yet recorded); LOCKED is not.
-  if (deps.participation.getState(fundId, ipoId) === ParticipationState.NON_PARTICIPATION_LOCKED) {
+  // 3. The bidding fund's own lock. Own UNKNOWN is allowed (not yet recorded); LOCKED is not. An answer
+  //    that is not one of the three states (or a lookup that throws) is not "UNKNOWN": it is refused.
+  const ownState = readParticipationState(deps.participation, fundId, ipoId);
+  if (ownState === undefined) return finish(BidReason.PARTICIPATION_LOOKUP_INVALID);
+  if (ownState === ParticipationState.NON_PARTICIPATION_LOCKED) {
     return finish(BidReason.NON_PARTICIPATION_LOCK_ACTIVE);
   }
 
-  // 4. Attestation presence, subject, shape.
-  const attestation = deps.attestations.getAttestation(fundId, ipoId);
+  // 4. Attestation presence, subject, shape. The attestation is read ONCE into a frozen copy; every
+  //    later check, the verifier, the rule engine and the receipt use that copy only.
+  const fetched = deps.attestations.getAttestation(fundId, ipoId);
+  if (fetched === undefined) return finish(BidReason.ATTESTATION_NOT_FOUND);
+  const attestation = snapshotAttestation(fetched);
+  if (attestation === undefined) return finish(BidReason.ATTESTATION_MALFORMED);
   ctx.attestation = attestation;
-  if (attestation === undefined) return finish(BidReason.ATTESTATION_NOT_FOUND);
   if (attestation.fundId !== fundId || attestation.ipoId !== ipoId) {
     return finish(BidReason.ATTESTATION_SUBJECT_MISMATCH);
   }
@@ -209,14 +246,19 @@ export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerificatio
 
   // 5. Attester authorization and signature, as implemented by the injected verifier
   //    (Eip712AttestationVerifier checks both; AllowlistAttestationVerifier only authorization).
-  const attester = deps.attesterVerifier.verify(attestation);
+  let attester: AttesterVerificationResult;
+  try {
+    attester = deps.attesterVerifier.verify(attestation);
+  } catch {
+    return finish(BidReason.SIGNATURE_INVALID);
+  }
   if (!attester.ok) return finish(attester.reasonCode);
 
   // 6. Revocation, validity window, staleness.
   if (deps.revocations.isRevoked(attestation.attestationId)) return finish(BidReason.ATTESTATION_REVOKED);
   if (verifiedAt < attestation.issuedAt) return finish(BidReason.ATTESTATION_NOT_YET_VALID);
   if (verifiedAt >= attestation.expiresAt) return finish(BidReason.ATTESTATION_EXPIRED);
-  if (verifiedAt - attestation.issuedAt > deps.activeRuleVersion.maxAttestationAgeMs) {
+  if (verifiedAt - attestation.issuedAt > maxAttestationAgeMs) {
     return finish(BidReason.ATTESTATION_STALE);
   }
 
@@ -263,6 +305,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function isWellFormed(a: CapacityAttestation): boolean {
   return (
     isKrw(a.grossCapacityKrw) &&
+    typeof a.attestationId === "string" &&
+    typeof a.attesterId === "string" &&
+    typeof a.nonce === "string" &&
+    typeof a.signature === "string" &&
     Number.isSafeInteger(a.issuedAt) &&
     Number.isSafeInteger(a.expiresAt) &&
     a.issuedAt < a.expiresAt &&
