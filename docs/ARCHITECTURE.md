@@ -38,7 +38,7 @@ AttestationVerifier, Clock ────────┘                          
 
 ## 주요 결정
 
-**용량 입력 경로 없음.** `BidRequest`에는 `fundId`, `ipoId`, `bidAmount`만 있다. `verifyBid`는 다른 키가 하나라도 있는 요청을 읽기 전에 거부한다(`INVALID_BID_REQUEST`). 총 용량과 노출은 `CapacityAttestation` 안에만 존재한다.
+**용량 입력 경로 없음.** `BidRequest`에는 `fundId`, `ipoId`, `bidAmount`만 있다. `verifyBid`는 다른 키가 하나라도 있는 요청을 거부한다(그 키의 값은 읽지 않는다)(`INVALID_BID_REQUEST`). 총 용량과 노출은 `CapacityAttestation` 안에만 존재한다. 요청 객체는 `fundId`/`ipoId`/`bidAmount`와 키 목록을 한 번씩만 읽어 원시값 스냅샷으로 만들며, 판정과 영수증 모두 그 스냅샷만 쓴다. 주입 의존성이 던지거나 시계가 안전한 정수가 아니면 `DEPENDENCY_ERROR`로 거부하고(예외 없음), 검증기 결과는 `ok === true`일 때만 통과한다.
 
 **참여 상태기계.** 허용되는 전이는 `UNKNOWN -> PARTICIPATING`, `UNKNOWN -> NON_PARTICIPATION_LOCKED`뿐이다. 동일 상태 반복과 UNKNOWN으로의 이동을 포함한 그 밖의 모든 전이는 거부한다. 잠긴 펀드의 참여 요청은 `NON_PARTICIPATION_LOCK_ACTIVE`, 참여 중인 펀드를 잠그려는 요청은 `PARTICIPATION_ALREADY_RECORDED`가 된다.
 
@@ -55,7 +55,7 @@ AttestationVerifier, Clock ────────┘                          
 
 **차감 누락.** `Fund.underlyingFundIds`(레지스트리 관점)는 어테스테이션 노출에 있는 펀드 집합과 같아야 한다. 누락은 `UNDERLYING_EXPOSURE_OMITTED`, 초과는 `UNDERLYING_EXPOSURE_NOT_IN_REGISTRY`, 중복은 `DUPLICATE_UNDERLYING_EXPOSURE`이다. 이는 레지스트리가 운용사로부터 독립적이라고 가정하는 것이며, 여기서 강제되는 것이 아니다.
 
-**게시(publish), nonce 재생, 교체.** `InMemoryAttestationStore`는 생성자에서 `AttestationVerifier`를 받으며, `publish(attestation)`은 `{ok: true}` 또는 `{ok: false, reasonCode}`를 반환한다(이전에는 boolean). `revoke`를 제외하면 상태를 바꾸는 유일한 경로이며 `verifyBid`는 읽기만 한다. 규칙은 다음 순서로 적용되고, 어떤 거부에서도 상태는 바뀌지 않는다. (1) 검증기가 어테스테이션을 받아들여야 한다(`ATTESTER_UNAUTHORIZED` / `SIGNATURE_INVALID`). 서명이 없거나 잘못된 입력은 nonce를 선점하지도, 진짜 어테스테이션을 교체하지도 못한다. (2) 현재 어테스테이션과 동일한 것을 다시 게시하면 상태 변화 없는 성공이다. 이미 교체된 `attestationId`는 다시 돌아올 수 없고(`ATTESTATION_SUPERSEDED`), 같은 id를 다른 내용으로 재사용하면 거부된다(`ATTESTATION_ID_CONFLICT`). (3) 어테스터별로 스코프가 정해진 nonce는 그것을 처음 사용한 어테스테이션에 바인딩되며, 다른 `attestationId`가 쓰면 거부된다(`NONCE_ALREADY_BOUND`). 교체된 어테스테이션의 바인딩을 포함해 바인딩은 절대 해제되지 않는다. (4) `(fundId, ipoId)`마다 가장 새로운 어테스테이션만 제공되며, 새 어테스테이션은 `issuedAt`이 엄격히 더 클 때만 현재 것을 교체한다(`NOT_NEWER_THAN_CURRENT`). 따라서 더 오래되고 용량이 큰 어테스테이션을 다시 올릴 수 없다. `verifyBid`는 읽은 것의 서명을 여전히 검사하고, 다른 어테스테이션에 바인딩된 nonce는 `ATTESTATION_NONCE_REPLAY`로 보고한다. 게시 관문은 다층 방어(defence in depth)다. 폐기된 현재 어테스테이션은 진짜로 더 새로운 것으로 교체할 수 있다. 같은 어테스테이션을 다시 검증하는 것(여러 입찰)은 허용된다.
+**게시(publish), nonce 재생, 교체.** `InMemoryAttestationStore`는 생성자에서 `AttestationVerifier`를 받으며, `publish(attestation)`은 `{ok: true}` 또는 `{ok: false, reasonCode}`를 반환한다(이전에는 boolean). `revoke`를 제외하면 상태를 바꾸는 유일한 경로이며 `verifyBid`는 읽기만 한다. 규칙은 다음 순서로 적용되고, 어떤 거부에서도 상태는 바뀌지 않는다. (1) 검증기가 어테스테이션을 받아들여야 한다(`ATTESTER_UNAUTHORIZED` / `SIGNATURE_INVALID`). 서명이 없거나 잘못된 입력은 nonce를 선점하지도, 진짜 어테스테이션을 교체하지도 못한다. (2) 현재 어테스테이션과 동일한 것을 다시 게시하면 상태 변화 없는 성공이다. 이미 교체된 `attestationId`는 다시 돌아올 수 없고(`ATTESTATION_SUPERSEDED`), 같은 id를 다른 내용으로 재사용하면 거부된다(`ATTESTATION_ID_CONFLICT`). (3) 어테스터별로 스코프가 정해진 nonce는 그것을 처음 사용한 어테스테이션에 바인딩되며, 다른 `attestationId`가 쓰면 거부된다(`NONCE_ALREADY_BOUND`). 교체된 어테스테이션의 바인딩을 포함해 바인딩은 절대 해제되지 않는다. (4) `(fundId, ipoId)`마다 가장 새로운 어테스테이션만 제공되며, 새 어테스테이션은 `issuedAt`이 엄격히 더 클 때만 현재 것을 교체한다(`NOT_NEWER_THAN_CURRENT`). 따라서 더 오래되고 용량이 큰 어테스테이션을 다시 올릴 수 없다. `verifyBid`는 읽은 것의 서명을 여전히 검사하고, 다른 어테스테이션에 바인딩된 nonce는 `ATTESTATION_NONCE_REPLAY`로 보고한다. 게시 관문은 다층 방어(defence in depth)다. 폐기된 현재 어테스테이션은 진짜로 더 새로운 것으로 교체할 수 있다. 같은 어테스테이션을 다시 검증하는 것(여러 입찰)은 허용된다. `publish`와 `verifyBid`는 어테스테이션을 한 번만 읽어 동결한 복사본으로 검증·저장·평가한다(읽기 실패는 `publish`에서 `ATTESTATION_MALFORMED`, `verifyBid`에서도 `ATTESTATION_MALFORMED`).
 
 **폐기(Revocation)** 는 서명 대상 객체 밖(`RevocationLookup`)에 둔다.
 

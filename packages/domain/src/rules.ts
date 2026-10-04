@@ -1,7 +1,7 @@
 import type { FundId, IpoId, RuleVersion, RuleVersionId, UnderlyingFundExposure } from "./model.js";
 import type { Krw } from "./money.js";
 import { sumKrw } from "./money.js";
-import { ParticipationState } from "./participation.js";
+import { ParticipationState, readParticipationState } from "./participation.js";
 import type { ParticipationLookup } from "./participation.js";
 
 export const DEMO_RULE_V1_ID = "DEMO_RULE_V1";
@@ -186,15 +186,7 @@ function evaluateDemoRule(input: RuleInput, spec: DemoRuleSpec): RuleEvaluation 
  * throws. UNKNOWN leads to rejection, so an unexpected value can never turn into an exemption.
  */
 function lookupState(participation: ParticipationLookup, fundId: FundId, ipoId: IpoId): ParticipationState {
-  let raw: unknown;
-  try {
-    raw = participation.getState(fundId, ipoId);
-  } catch {
-    return ParticipationState.UNKNOWN;
-  }
-  return raw === ParticipationState.PARTICIPATING || raw === ParticipationState.NON_PARTICIPATION_LOCKED
-    ? raw
-    : ParticipationState.UNKNOWN;
+  return readParticipationState(participation, fundId, ipoId) ?? ParticipationState.UNKNOWN;
 }
 
 function treatmentFor(state: ParticipationState): Treatment {
@@ -221,6 +213,14 @@ const RULES: ReadonlyMap<RuleVersionId, { readonly version: RuleVersion; readonl
     [DEMO_RULE_V1_ID, { version: DEMO_RULE_V1, evaluate: evaluateDemoRuleV1 }],
     [DEMO_RULE_V2_ID, { version: DEMO_RULE_V2, evaluate: evaluateDemoRuleV2 }],
   ]);
+
+/**
+ * The registered, frozen definition for an id, or undefined. `verifyBid` takes the stale limit from
+ * here and refuses a caller-supplied `RuleVersion` whose parameters differ from it.
+ */
+export function getRegisteredRuleVersion(id: unknown): RuleVersion | undefined {
+  return typeof id === "string" ? RULES.get(id)?.version : undefined;
+}
 
 export function isSupportedRuleVersion(id: RuleVersionId): boolean {
   return RULES.has(id);
