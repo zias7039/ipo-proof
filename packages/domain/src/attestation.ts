@@ -26,6 +26,27 @@ export interface AttestationVerifier {
 }
 
 /**
+ * Runs an injected verifier and reduces whatever it answers to a verdict. Only an answer whose
+ * `ok` is exactly `true` passes; a throw, a non-object, `{ok: "yes"}`, `{ok: 1}`, a missing `ok` or an
+ * unknown `reasonCode` are all SIGNATURE_INVALID (fail closed, never a truthy-pass and never a throw).
+ */
+export function runVerifier(verifier: AttestationVerifier, attestation: CapacityAttestation): AttesterVerificationResult {
+  try {
+    const answer: unknown = verifier.verify(attestation);
+    if (typeof answer !== "object" || answer === null) return INVALID_VERDICT;
+    const ok: unknown = (answer as { ok?: unknown }).ok;
+    if (ok === true) return { ok: true };
+    const reason: unknown = (answer as { reasonCode?: unknown }).reasonCode;
+    return reason === AttesterVerificationFailure.ATTESTER_UNAUTHORIZED
+      ? { ok: false, reasonCode: AttesterVerificationFailure.ATTESTER_UNAUTHORIZED }
+      : INVALID_VERDICT;
+  } catch {
+    return INVALID_VERDICT;
+  }
+}
+const INVALID_VERDICT: AttesterVerificationResult = Object.freeze({ ok: false, reasonCode: AttesterVerificationFailure.SIGNATURE_INVALID });
+
+/**
  * Authorization-only verifier: signature verification is NOT performed. Kept for tests and
  * demos of the other `verifyBid` checks.
  *
@@ -166,12 +187,7 @@ export class InMemoryAttestationStore implements AttestationSource, RevocationLo
     // was verified is exactly what is served later.
     const attestation = snapshotAttestation(input);
     if (attestation === undefined) return { ok: false, reasonCode: PublishRejection.ATTESTATION_MALFORMED };
-    let verdict: AttesterVerificationResult;
-    try {
-      verdict = this.verifier.verify(attestation);
-    } catch {
-      return { ok: false, reasonCode: PublishRejection.SIGNATURE_INVALID };
-    }
+    const verdict = runVerifier(this.verifier, attestation);
     if (!verdict.ok) return { ok: false, reasonCode: verdict.reasonCode };
 
     const existing = this.byId.get(attestation.attestationId);

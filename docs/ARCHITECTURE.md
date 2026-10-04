@@ -34,7 +34,7 @@ AttestationVerifier, Clock ────────┘                          
 
 ## 주요 결정
 
-**용량 입력 경로 없음.** `BidRequest`에는 `fundId`, `ipoId`, `bidAmount`만 있다. `verifyBid`는 다른 키가 하나라도 있는 요청을 읽기 전에 거부한다(`INVALID_BID_REQUEST`). 총 용량과 노출은 `CapacityAttestation` 안에만 존재한다.
+**용량 입력 경로 없음.** `BidRequest`에는 `fundId`, `ipoId`, `bidAmount`만 있다. `verifyBid`는 다른 키가 하나라도 있는 요청을 거부한다(그 키의 값은 읽지 않는다)(`INVALID_BID_REQUEST`). 총 용량과 노출은 `CapacityAttestation` 안에만 존재한다. 요청 객체는 `fundId`/`ipoId`/`bidAmount`와 키 목록을 한 번씩만 읽어 원시값 스냅샷으로 만들며, 판정과 영수증 모두 그 스냅샷만 쓴다. 주입 의존성이 던지거나 시계가 안전한 정수가 아니면 `DEPENDENCY_ERROR`로 거부하고(예외 없음), 검증기 결과는 `ok === true`일 때만 통과한다.
 
 **참여 상태기계.** 허용되는 전이는 `UNKNOWN -> PARTICIPATING`, `UNKNOWN -> NON_PARTICIPATION_LOCKED`뿐이다. 동일 상태 반복과 UNKNOWN으로의 이동을 포함한 그 밖의 모든 전이는 거부한다. 잠긴 펀드의 참여 요청은 `NON_PARTICIPATION_LOCK_ACTIVE`, 참여 중인 펀드를 잠그려는 요청은 `PARTICIPATION_ALREADY_RECORDED`가 된다.
 

@@ -388,3 +388,171 @@ describe("#36-3: the bidding fund's own lock lookup is normalised (fail closed)"
     expect(readParticipationState({ getState: () => { throw new Error("x"); } }, "fund_a", "ipo_1")).toBeUndefined();
   });
 });
+
+describe("re-review N-1: the request is read once into primitives (verdict and receipt describe the same bid)", () => {
+  /** An accessor that answers `first` on the first read and `later` afterwards; `reads()` counts the reads. */
+  function flipping<T>(first: T, later: T) {
+    let n = 0;
+    return { get: () => (++n === 1 ? first : later), reads: () => n };
+  }
+
+  it("a fundId that changes after the first read cannot split the verdict from the receipt", () => {
+    const { deps } = makeEnv();
+    const honest = verifyBid(bid(24_000_000_000n), deps);
+    const f = flipping("fund_a", "fund_other");
+    const request = { ipoId: "ipo_1", bidAmount: 24_000_000_000n };
+    Object.defineProperty(request, "fundId", { enumerable: true, get: f.get });
+    const result = verifyBid(request, deps);
+    expect(result).toEqual(honest); // same verdict AND the same receipt hash as an honest request for fund_a
+    expect(f.reads()).toBe(1);
+  });
+
+  it("the same holds for ipoId and bidAmount, each read exactly once", () => {
+    const { deps } = makeEnv();
+    const ipo = flipping("ipo_1", "ipo_other");
+    const amount = flipping(24_000_000_000n, 1n);
+    const fund = flipping("fund_a", "fund_x");
+    const request = {};
+    Object.defineProperty(request, "fundId", { enumerable: true, get: fund.get });
+    Object.defineProperty(request, "ipoId", { enumerable: true, get: ipo.get });
+    Object.defineProperty(request, "bidAmount", { enumerable: true, get: amount.get });
+    expect(verifyBid(request, deps)).toEqual(verifyBid(bid(24_000_000_000n), deps));
+    expect([fund.reads(), ipo.reads(), amount.reads()]).toEqual([1, 1, 1]);
+  });
+
+  it("an accessor that throws on a LATER read cannot make verifyBid throw", () => {
+    const { deps } = makeEnv();
+    let n = 0;
+    const request = { ipoId: "ipo_1", bidAmount: 24_000_000_000n };
+    Object.defineProperty(request, "fundId", {
+      enumerable: true,
+      get: () => {
+        if (++n > 1) throw new Error("boom on later read");
+        return "fund_a";
+      },
+    });
+    expect(verifyBid(request, deps)).toMatchObject({ eligible: true }); // one call: exactly one read, no throw
+    expect(n).toBe(1);
+  });
+
+  it("an accessor that throws on the first read makes the request invalid, with a null/null receipt (no exception)", () => {
+    const { deps } = makeEnv();
+    const request = { ipoId: "ipo_1", bidAmount: 1n };
+    Object.defineProperty(request, "fundId", { enumerable: true, get: () => { throw new Error("boom"); } });
+    const r = verifyBid(request, deps);
+    expect(r).toMatchObject(rejected("INVALID_BID_REQUEST"));
+    expect(r.proofHash).toBe(verifyBid({ fundId: 7, ipoId: 7, bidAmount: 1n }, deps).proofHash); // both receipts carry null ids
+  });
+
+  it("a Proxy is read once per field and its key list once; a throwing trap is an invalid request", () => {
+    const { deps } = makeEnv();
+    const log: string[] = [];
+    const target = { fundId: "fund_a", ipoId: "ipo_1", bidAmount: 24_000_000_000n };
+    const spy = new Proxy(target, {
+      get: (t, k, r) => (log.push(`get:${String(k)}`), Reflect.get(t, k, r) as unknown),
+      ownKeys: (t) => (log.push("ownKeys"), Reflect.ownKeys(t)),
+    });
+    expect(verifyBid(spy, deps)).toMatchObject({ eligible: true });
+    expect(log.filter((l) => l.startsWith("get:")).sort()).toEqual(["get:bidAmount", "get:fundId", "get:ipoId"]);
+    expect(log.filter((l) => l === "ownKeys")).toHaveLength(1);
+    const hostile = new Proxy({}, { ownKeys: () => { throw new Error("boom"); } });
+    expect(verifyBid(hostile, deps)).toMatchObject(rejected("INVALID_BID_REQUEST"));
+  });
+
+  it("the receipt of a valid request is unchanged by the snapshot (pinned hash)", () => {
+    const { deps } = makeEnv();
+    expect(verifyBid(bid(24_000_000_000n), deps).proofHash).toBe("f072ab07ad9bbb8e475739cd10641e71b914891fab8f0606e52f862312132521");
+  });
+});
+
+describe("re-review N-2: only `ok === true` from the verifier passes (never a truthy value)", () => {
+  const withVerifier = (answer: unknown) => {
+    const { deps } = makeEnv();
+    return verifyBid(bid(1n), { ...deps, attesterVerifier: { verify: () => answer as never } });
+  };
+
+  it("truthy lookalikes, malformed answers and unknown reason codes are SIGNATURE_INVALID", () => {
+    for (const answer of [{ ok: "yes" }, { ok: 1 }, { ok: {} }, { ok: [] }, {}, { ok: false }, { ok: false, reasonCode: "WHATEVER" }, { ok: false, reasonCode: "ELIGIBLE" }, undefined, null, "ok", 1, true]) {
+      expect(withVerifier(answer), JSON.stringify(answer)).toMatchObject(rejected("SIGNATURE_INVALID"));
+    }
+  });
+
+  it("a verifier that throws is a failed signature; the known authorization failure keeps its own code; ok === true passes", () => {
+    const { deps } = makeEnv();
+    const throwing = verifyBid(bid(1n), { ...deps, attesterVerifier: { verify: () => { throw new Error("boom"); } } });
+    expect(throwing).toMatchObject(rejected("SIGNATURE_INVALID"));
+    expect(withVerifier({ ok: false, reasonCode: "ATTESTER_UNAUTHORIZED" })).toMatchObject(rejected("ATTESTER_UNAUTHORIZED"));
+    expect(withVerifier({ ok: true })).toMatchObject({ eligible: true });
+  });
+
+  it("`ok` is read once: an accessor that flips after the first read does not pass", () => {
+    let n = 0;
+    const answer = {};
+    Object.defineProperty(answer, "ok", { get: () => ++n === 1 });
+    expect(withVerifier(answer)).toMatchObject({ eligible: true });
+    expect(n).toBe(1);
+    let m = 0;
+    const flip = {};
+    Object.defineProperty(flip, "ok", { get: () => ++m > 1 });
+    expect(withVerifier(flip)).toMatchObject(rejected("SIGNATURE_INVALID"));
+    expect(m).toBe(1);
+  });
+
+  it("publish applies the same rule", () => {
+    for (const answer of [{ ok: "yes" }, { ok: 1 }, undefined, null, {}]) {
+      const store = new InMemoryAttestationStore({ verify: () => answer as never });
+      expect(store.publish(att()), JSON.stringify(answer)).toEqual({ ok: false, reasonCode: "SIGNATURE_INVALID" });
+    }
+    expect(new InMemoryAttestationStore({ verify: () => ({ ok: true }) }).publish(att())).toEqual({ ok: true });
+  });
+});
+
+describe("re-review N-3: a failing dependency or a bad clock is a rejection, never an exception", () => {
+  const boom = () => {
+    throw new Error("boom");
+  };
+
+  it.each([
+    ["funds", (d: VerifyBidDeps) => ({ ...d, funds: { getFund: boom } })],
+    ["ipos", (d: VerifyBidDeps) => ({ ...d, ipos: { getIpo: boom } })],
+    ["attestations", (d: VerifyBidDeps) => ({ ...d, attestations: { getAttestation: boom } })],
+    ["revocations", (d: VerifyBidDeps) => ({ ...d, revocations: { isRevoked: boom } })],
+    ["nonces", (d: VerifyBidDeps) => ({ ...d, nonces: { boundAttestationId: boom } })],
+    ["clock", (d: VerifyBidDeps) => ({ ...d, clock: { now: boom } })],
+  ])("%s throws -> DEPENDENCY_ERROR", (_name, mutate) => {
+    const { deps } = makeEnv();
+    const r = verifyBid(bid(1n), mutate(deps) as VerifyBidDeps);
+    expect(r).toMatchObject({ eligible: false, reasonCode: "DEPENDENCY_ERROR" });
+    expect(r.proofHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("a clock that is not a safe integer is refused (NaN, Infinity, float, string, undefined, bigint) and the time is the placeholder 0", () => {
+    const { deps } = makeEnv();
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, "1800000000000", undefined, 5n, Number.MAX_SAFE_INTEGER + 1]) {
+      const r = verifyBid(bid(1n), { ...deps, clock: { now: () => bad as never } });
+      expect(r, String(bad)).toMatchObject({ eligible: false, reasonCode: "DEPENDENCY_ERROR", verifiedAt: 0 });
+    }
+  });
+
+  it("unusable deps (null, missing members) are a rejection too", () => {
+    expect(verifyBid(bid(1n), null as never)).toMatchObject({ eligible: false, reasonCode: "DEPENDENCY_ERROR" });
+    const { deps } = makeEnv();
+    expect(verifyBid(bid(1n), { ...deps, funds: undefined as never })).toMatchObject({ eligible: false, reasonCode: "DEPENDENCY_ERROR" });
+    expect(verifyBid(bid(1n), { ...deps, clock: undefined as never })).toMatchObject({ eligible: false, reasonCode: "DEPENDENCY_ERROR" });
+  });
+
+  it("every dependency is read from deps once (a getter that changes later does not matter)", () => {
+    const { deps } = makeEnv();
+    let n = 0;
+    const flipping = { ...deps } as Record<string, unknown>;
+    Object.defineProperty(flipping, "funds", { enumerable: true, get: () => (++n === 1 ? deps.funds : { getFund: boom }) });
+    expect(verifyBid(bid(24_000_000_000n), flipping as unknown as VerifyBidDeps)).toMatchObject({ eligible: true });
+    expect(n).toBe(1);
+  });
+
+  it("the exception-free contract also holds for the underlying funds' lookups (they are UNKNOWN, i.e. refused)", () => {
+    const { deps } = makeEnv();
+    const participation: ParticipationLookup = { getState: (f) => { if (f === "fund_a") return ParticipationState.UNKNOWN; throw new Error("boom"); } };
+    expect(verifyBid(bid(1n), { ...deps, participation })).toMatchObject(rejected("UNDERLYING_PARTICIPATION_UNKNOWN"));
+  });
+});
