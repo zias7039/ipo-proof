@@ -27,6 +27,8 @@ export const LEDGER_TEST_DOMAIN: Eip712Domain = {
 
 export const LEDGER_TEST_ID = "ledger_test";
 /** Longest accepted request lifetime in the test world: 14 days (FAR is 10 days ahead). */
+/** Generous default so that unrelated tests never hit the finding limit; the limit tests override it. */
+export const TEST_MAX_FINDINGS = 50;
 export const TEST_MAX_TTL_MS = 14 * 24 * HOUR;
 
 /** viem form of the ledger domain: the four domain fields plus `salt` = genesis hash of the ledger id (M-3). */
@@ -82,6 +84,7 @@ export function makeAuthWorld(o: { principals?: PrincipalRegistry; config?: Part
     registrySeq: 1,
     ledgerId: LEDGER_TEST_ID,
     maxRequestTtlMs: TEST_MAX_TTL_MS,
+    maxFindingsPerIpo: TEST_MAX_FINDINGS,
     ...o.config,
   });
   return { ledger, clock };

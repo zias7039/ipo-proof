@@ -563,7 +563,7 @@ describe("fail closed: no throws, hostile input, bad configuration", () => {
   });
 
   it("invalid deployment configuration throws TypeError at construction (not attacker input)", () => {
-    const base = { now: () => NOW, domain: LEDGER_TEST_DOMAIN, principals: principals(), funds: { getFund: () => undefined }, ipos: { getIpo: () => undefined }, registrySeq: 1, ledgerId: LEDGER_TEST_ID, maxRequestTtlMs: TEST_MAX_TTL_MS };
+    const base = { now: () => NOW, domain: LEDGER_TEST_DOMAIN, principals: principals(), funds: { getFund: () => undefined }, ipos: { getIpo: () => undefined }, registrySeq: 1, ledgerId: LEDGER_TEST_ID, maxRequestTtlMs: TEST_MAX_TTL_MS, maxFindingsPerIpo: 50 };
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, name: "ipo-proof CapacityAttestation" } })).toThrow(TypeError);
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, version: "2" } })).toThrow(TypeError);
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, chainId: 0n } })).toThrow(TypeError);

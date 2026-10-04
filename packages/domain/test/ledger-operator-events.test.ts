@@ -274,6 +274,7 @@ describe("MANAGER_KEY_REVOKED (R18, R9, L-66..L-68): one global event, no IPO", 
 /* --------------------------------- part 2: the signed gate --------------------------------- */
 
 const sub = (w: ReturnType<typeof makeAuthWorld>, r: unknown) => w.ledger.submit(r);
+const NOW_FOR_S1 = CLOSES_AT;
 
 /** ipo_1 with fund_x PARTICIPATING recorded, then closed by the operator. */
 async function closedWorld() {
@@ -442,5 +443,111 @@ describe("principle E", () => {
     must(ledger.append(finalize(cutoff)));
     const json = JSON.stringify(ledger.events());
     expect(json).not.toMatch(/amount|capacity|krw|exposure/i);
+  });
+});
+
+describe("S-1 (inherits #40 N-1): the three new decide branches are unreachable from outside; nothing can be forged without a signature", () => {
+  const fakeAdmin = { principalId: "admin_1", role: "REGISTRY_ADMIN", address: "0x" + "1".repeat(40), controllerId: "ctrl_fake", keyId: "admin_1" };
+  const fakeOperator = { principalId: "operator_1", role: "LEDGER_OPERATOR", address: "0x" + "2".repeat(40), controllerId: "ctrl_fake", keyId: "operator_1" };
+  const INTERNALS = ["decide", "authenticate", "authorizeManager", "authorizeApproval", "replacementDraft", "checkLifetime", "submitUnchecked"];
+
+  it("calling the old internals with a fake REGISTRY_ADMIN / LEDGER_OPERATOR cannot append MANAGER_KEY_REVOKED / IPO_FINALIZED / FINDING_ANNOTATED", async () => {
+    const { w, cutoff } = await closedWorld();
+    const l = w.ledger as unknown as Record<string, unknown>;
+    const before = w.ledger.events().length;
+    const target = def(w.ledger.events()[0]);
+    const drafts = [await revokeDraft({ managerId: "manager_x" }), await finalizeDraft(cutoff), await findingDraft(target)];
+    for (const name of INTERNALS) {
+      expect(l[name], name).toBeUndefined();
+      for (const draft of drafts) {
+        for (const actor of [fakeAdmin, fakeOperator]) {
+          expect(() => (l[name] as (...a: unknown[]) => unknown)(draft, actor, new Uint8Array(32), actor.address, NOW_FOR_S1), name).toThrow(TypeError);
+        }
+      }
+    }
+    expect(w.ledger.events().length).toBe(before);
+    expect(w.ledger.isKeyRevoked("manager_x", "manager_x")).toBe(false);
+    expect(w.ledger.isFinalized("ipo_1")).toBe(false);
+  });
+
+  it("a request without a valid signature is refused for all three event types, and a fake principal as the request is malformed", async () => {
+    const { w, cutoff } = await closedWorld();
+    const target = def(w.ledger.events()[0]);
+    const before = w.ledger.events().length;
+    for (const draft of [await revokeDraft({ managerId: "manager_x" }), await finalizeDraft(cutoff), await findingDraft(target)]) {
+      const forged = { ...draft, authorization: { ...(draft["authorization"] as object), signature: `0x${"ab".repeat(65)}` } };
+      expect(sub(w, forged)).toEqual(rej("LEDGER_SIGNATURE_INVALID"));
+    }
+    expect(sub(w, fakeAdmin)).toEqual(rej("EVENT_MALFORMED"));
+    expect(sub(w, fakeOperator)).toEqual(rej("EVENT_MALFORMED"));
+    expect(w.ledger.events().length).toBe(before);
+    expect(w.ledger.isKeyRevoked("manager_x", "manager_x")).toBe(false);
+  });
+});
+
+describe("S-4: the number of FINDING_ANNOTATED events per IPO is bounded (maxFindingsPerIpo)", () => {
+  async function limitedWorld(max: number) {
+    const w = makeAuthWorld({ config: { maxFindingsPerIpo: max } });
+    mustSubmit(w.ledger, await recordDraft({ nonce: "p1", ipo: "ipo_1" }));
+    mustSubmit(w.ledger, await recordDraft({ nonce: "p2", ipo: "ipo_2" }));
+    const t1 = def(w.ledger.events()[0]);
+    const t2 = def(w.ledger.events()[1]);
+    return { w, t1, t2 };
+  }
+
+  it("the (max+1)-th annotation of an IPO is refused, nothing is appended, other IPOs are unaffected", async () => {
+    const { w, t1, t2 } = await limitedWorld(3);
+    for (let i = 0; i < 3; i++) expect(sub(w, await findingDraft(t1, { nonce: `f${i}` })).ok).toBe(true);
+    const before = w.ledger.events().length;
+    expect(sub(w, await findingDraft(t1, { nonce: "f3" }))).toEqual(rej("LEDGER_FINDING_LIMIT_EXCEEDED"));
+    expect(w.ledger.events().length).toBe(before);
+    // the limit is per IPO
+    expect(sub(w, await findingDraft(t2, { nonce: "g0", ipo: "ipo_2" })).ok).toBe(true);
+    // it is not a general block: other event types still work
+    expect(sub(w, await recordDraft({ nonce: "p3", ipo: "ipo_1", fund: "fund_z" })).ok).toBe(true);
+  });
+
+  it("a limit rejection consumes the request (a resend gets the same answer, also when the count would later allow it)", async () => {
+    const { w, t1 } = await limitedWorld(1);
+    expect(sub(w, await findingDraft(t1, { nonce: "f0" })).ok).toBe(true);
+    const over = await findingDraft(t1, { nonce: "f1" });
+    expect(sub(w, over)).toEqual(rej("LEDGER_FINDING_LIMIT_EXCEEDED"));
+    expect(sub(w, over)).toEqual(rej("LEDGER_FINDING_LIMIT_EXCEEDED"));
+  });
+
+  it("only accepted annotations are counted: a refused one (invalid target) does not use up the limit", async () => {
+    const { w, t1 } = await limitedWorld(2);
+    expect(sub(w, await findingDraft({ seq: 99, eventHash: "a".repeat(64) }, { nonce: "bad" }))).toEqual(rej("LEDGER_FINDING_TARGET_INVALID"));
+    expect(sub(w, await findingDraft(t1, { nonce: "f0" })).ok).toBe(true);
+    expect(sub(w, await findingDraft(t1, { nonce: "f1" })).ok).toBe(true);
+    expect(sub(w, await findingDraft(t1, { nonce: "f2" }))).toEqual(rej("LEDGER_FINDING_LIMIT_EXCEEDED"));
+  });
+
+  it("the count comes from the chain: a gate rebuilt over the same configuration sees the same count only through the events it holds", async () => {
+    const { w, t1 } = await limitedWorld(2);
+    sub(w, await findingDraft(t1, { nonce: "f0" }));
+    sub(w, await findingDraft(t1, { nonce: "f1" }));
+    const findings = w.ledger.events().filter((e) => e.eventType === "FINDING_ANNOTATED" && e.ipoId === "ipo_1").length;
+    expect(findings).toBe(2);
+    expect(sub(w, await findingDraft(t1, { nonce: "f2" })).ok).toBe(false);
+  });
+
+  it("the limit concerns annotations only: at the limit the IPO can still be closed and finalized", async () => {
+    const { w, t1 } = await limitedWorld(1);
+    expect(sub(w, await findingDraft(t1, { nonce: "f0" })).ok).toBe(true);
+    expect(sub(w, await findingDraft(t1, { nonce: "f1" }))).toEqual(rej("LEDGER_FINDING_LIMIT_EXCEEDED"));
+    w.clock.t = CLOSES_AT;
+    const seqAtClose = w.ledger.events().length;
+    mustSubmit(w.ledger, await closeDraft({ ledgerSeqAtClose: seqAtClose }));
+    const close = def(w.ledger.events()[seqAtClose]);
+    expect(sub(w, await finalizeDraft({ ledgerSeqAtClose: seqAtClose, ledgerHeadHashAtClose: close.prevHash })).ok).toBe(true);
+  });
+
+  it("the limit is required: unset, NaN, 0, negative, fractional, infinite or non-number is a configuration error", () => {
+    const mk = (v: unknown) => () => makeAuthWorld({ config: { maxFindingsPerIpo: v as number } });
+    for (const bad of [undefined, Number.NaN, 0, -1, 1.5, Number.POSITIVE_INFINITY, "3", null, 3n, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(mk(bad), String(bad)).toThrow(TypeError);
+    }
+    expect(mk(1)).not.toThrow();
   });
 });

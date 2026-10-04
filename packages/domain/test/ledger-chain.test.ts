@@ -30,12 +30,12 @@ describe("hash chain: structure", () => {
   it("an empty ledger has the genesis head and verifies", () => {
     const { ledger } = newLedger();
     expect(ledger.headHash()).toBe(LEDGER_GENESIS_PREV_HASH);
-    expect(verifyChain([])).toEqual({ ok: true, length: 0, headHash: LEDGER_GENESIS_PREV_HASH });
+    expect(verifyChain([])).toEqual({ ok: true, length: 0, headHash: LEDGER_GENESIS_PREV_HASH, ledgerBound: false });
   });
 
   it("verifyChain accepts the untouched chain and reports length and head", () => {
     const l = fiveEvents();
-    expect(verifyChain(plain(l.events()))).toEqual({ ok: true, length: 5, headHash: l.headHash() });
+    expect(verifyChain(plain(l.events()))).toEqual({ ok: true, length: 5, headHash: l.headHash(), ledgerBound: false });
   });
 
   it("eventHash is sha256 of the canonical JSON of the domain-tagged event without eventHash", () => {

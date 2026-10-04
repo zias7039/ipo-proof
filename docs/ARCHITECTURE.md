@@ -34,7 +34,7 @@ AttestationVerifier, Clock ────────┘                          
 | `ledger/chain.ts` | 해시 체인(`verifyChain`, `HashChainedLedger`). 변조 **탐지**일 뿐 블록체인도 ZK도 아님. `HashChainedLedger`는 저수준·무인증 저장소라 패키지 배럴에서 내렸고(상대 경로로만 import), 내부 상태는 `#private`, `events()`는 동결된 배열을 반환함. genesis 해시는 `ledgerId`(선택)에서 파생됨 |
 | `ledger/signing.ts` | 원장 EIP-712 typed data(`LedgerAction`, `LedgerAnnulment`, `AnnulmentApproval`, `OperatorAction`, `KeyRevocation`), 도메인(name·version·chainId·verifyingContract·salt) 분리. `salt`는 `ledgerId`에서 파생한 genesis 해시. `OperatorAction`은 actorId·payloadDigest를 포함. 서명 대상에 금액 없음 |
 | `ledger/principals.ts` | 서명자 → 역할/주체 레지스트리(주입, 중복·키 재사용 거부, 주체당 키 ID 1개), 정정 승인자 독립성 검사(I1~I5) |
-| `ledger/authorized.ts` | `AuthorizedLedger`: 서명 검증 + 인가(R1~R5, R6b, R8, R9, R10, R14, R17~R19) 게이트. 던지지 않고 reason code 반환, nonce/재전송 방지(인메모리, 인증 통과 후 거부돼도 소비), 최대 유효기간. 내부 상태 `#private`+동결. 서명은 출처 증명일 뿐 데이터 진위·ZK가 아님 |
+| `ledger/authorized.ts` | `AuthorizedLedger`: 서명 검증 + 인가(R1~R5, R6b, R8, R9, R10, R14, R17~R19) 게이트. 던지지 않고 reason code 반환, nonce/재전송 방지(인메모리, 인증 통과 후 거부돼도 소비), 최대 유효기간. 내부 상태 `#private`+동결. 서명은 출처 증명일 뿐 데이터 진위·ZK가 아님. `MANAGER_KEY_REVOKED` 한계: 폐기 뒤에는 그 운용사의 `LedgerAnnulment`도 거부되므로 **폐기 후 키 교체와 `KEY_COMPROMISE` 정정은 #13 전에는 불가능**(정정→폐기 순서만 가능하고 그 사이 공격자가 기록할 수 있음), 관리자 서명 1개로 영구 폐기(쿼럼·복구 없음), 폐기는 게이트에서만 강제(`verifyChain`은 재검증하지 않음). `FINDING_ANNOTATED`는 IPO당 `maxFindingsPerIpo`(필수 설정, 체인에서 개수 파생, 게이트에서만 강제)로 제한 |
 
 ## 주요 결정
 
