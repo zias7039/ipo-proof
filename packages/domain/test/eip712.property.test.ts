@@ -191,7 +191,7 @@ describe("알려진 결함 (#36 §2)", () => {
   });
 
   // 한국어 설명: 읽을 때마다 값이 바뀌는 getter로, 서명 검증은 서명된 값(10억)을 보고 규칙 평가는 부풀린 값을 읽어 20bn 입찰이 적격이 된다.
-  it.fails("[#36 §2] 서명 검증과 규칙 평가가 서로 다른 값을 읽는 어테스테이션(TOCTOU)으로 적격이 되면 안 된다", async () => {
+  it("[#36 §2] 서명 검증과 규칙 평가가 서로 다른 값을 읽는 어테스테이션(TOCTOU)으로 적격이 되면 안 된다", async () => {
     const small = await signedAtt({ grossCapacityKrw: 1_000_000_000n });
     const env = makeSignedEnv({ recordStates: true });
     mustPublish(env.store, small);
