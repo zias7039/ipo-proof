@@ -1,13 +1,14 @@
+import { runVerifier, snapshotAttestation } from "./attestation.js";
 import type { AttestationSource, AttestationVerifier, NonceLookup, RevocationLookup } from "./attestation.js";
 import { sha256CanonicalHex } from "./hash.js";
 import type { CapacityAttestation, FundId, IpoId, RuleVersion } from "./model.js";
 import { isSyntheticId } from "./model.js";
 import { isKrw } from "./money.js";
 import type { Krw } from "./money.js";
-import { ParticipationState } from "./participation.js";
+import { ParticipationState, readParticipationState } from "./participation.js";
 import type { ParticipationLookup } from "./participation.js";
 import type { FundRegistry, IpoRegistry } from "./registry.js";
-import { UndeterminedCause, evaluateRule, isSupportedRuleVersion } from "./rules.js";
+import { UndeterminedCause, evaluateRule, getRegisteredRuleVersion } from "./rules.js";
 import type { RuleFlag } from "./rules.js";
 
 /**
@@ -28,7 +29,19 @@ export const BidReason = {
   IPO_NOT_FOUND: "IPO_NOT_FOUND",
   IPO_NOT_OPEN: "IPO_NOT_OPEN",
   NON_PARTICIPATION_LOCK_ACTIVE: "NON_PARTICIPATION_LOCK_ACTIVE",
+  /**
+   * The active rule version is missing, not a registered id, or carries parameters that differ from the
+   * registered definition (for example a tampered or non-finite `maxAttestationAgeMs`).
+   */
   RULE_VERSION_UNSUPPORTED: "RULE_VERSION_UNSUPPORTED",
+  /** The bidding fund's own participation lookup threw or returned something other than the three known states. */
+  PARTICIPATION_LOOKUP_INVALID: "PARTICIPATION_LOOKUP_INVALID",
+  /**
+   * An injected dependency (clock, registry, participation lookup of the underlying funds, attestation source,
+   * revocations, nonces) threw, or the clock did not return a safe integer. Fail closed. When the clock is the
+   * problem `verifiedAt` is 0 in the result and the receipt: that 0 is a placeholder, not a time.
+   */
+  DEPENDENCY_ERROR: "DEPENDENCY_ERROR",
   ATTESTATION_NOT_FOUND: "ATTESTATION_NOT_FOUND",
   ATTESTATION_SUBJECT_MISMATCH: "ATTESTATION_SUBJECT_MISMATCH",
   ATTESTATION_MALFORMED: "ATTESTATION_MALFORMED",
@@ -126,17 +139,37 @@ export function buildReceipt(fields: ReceiptFields): Record<string, unknown> {
 
 const REQUEST_KEYS = ["bidAmount", "fundId", "ipoId"];
 
+/** Receipt placeholder for a missing or non-string active rule id. Not a valid id (see `isSyntheticId`), so it cannot collide with a real rule. */
+export const INVALID_RULE_VERSION_ID = "<invalid>";
+
+/** The caller-supplied rule version, read ONCE. Fields are unknown until compared with the registry. */
+function readActiveRule(v: unknown): { readonly id: unknown; readonly maxAttestationAgeMs: unknown } {
+  try {
+    // undefined / null throw on access and a primitive has neither field: all end up in the catch / as undefined.
+    const r = v as Record<string, unknown>;
+    return { id: r["id"], maxAttestationAgeMs: r["maxAttestationAgeMs"] };
+  } catch {
+    return { id: undefined, maxAttestationAgeMs: undefined };
+  }
+}
+
 /**
  * Pure verification of a bid against injected state. First failing check wins; order:
- *  request shape -> bid amount -> fund registered -> IPO exists/open -> rule version supported
- *  -> subject's own lock -> attestation present/subject/shape -> rule version match
+ *  request shape -> bid amount -> fund registered -> IPO exists/open -> rule version supported and its
+ *  parameters equal the registered definition (RULE_VERSION_UNSUPPORTED otherwise)
+ *  -> subject's own lock (an invalid lookup answer is PARTICIPATION_LOOKUP_INVALID) -> attestation present/subject/shape -> rule version match
  *  -> attester authorization + signature (per injected verifier) -> revoked -> validity window
  *  (not-yet-valid / expired / stale) -> nonce replay -> underlying exposure completeness
  *  -> rule evaluation (rejects if any underlying participation is UNKNOWN; DEMO_RULE_V2: a 0 KRW UNKNOWN is reported first as a data error) -> bid vs adjusted capacity.
  */
 export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerification {
-  const verifiedAt = deps.clock.now();
-  const ruleVersion = deps.activeRuleVersion.id;
+  // The request is read ONCE into primitives. The shape check, the registry lookups and the receipt all
+  // use this snapshot, so an accessor that answers differently on a later read cannot make the verdict
+  // and the receipt describe different funds or IPOs (#36 re-review N-1).
+  const snap = snapshotRequest(request);
+  // Filled in as the checks progress; `finish` must not read anything from the caller or from a dependency.
+  let verifiedAt = 0;
+  let ruleVersion = INVALID_RULE_VERSION_ID;
   // Context accumulated while checking; only non-sensitive parts end up in the receipt.
   const ctx: { attestation: CapacityAttestation | undefined; flags: readonly RuleFlag[] } = {
     attestation: undefined,
@@ -146,11 +179,11 @@ export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerificatio
   const finish = (reasonCode: BidReason): BidVerification => {
     const eligible = reasonCode === BidReason.ELIGIBLE;
     const receipt = buildReceipt({
-      fundId: isRecord(request) ? request["fundId"] : undefined,
-      ipoId: isRecord(request) ? request["ipoId"] : undefined,
+      fundId: snap.fundId,
+      ipoId: snap.ipoId,
       ruleVersion,
-      attestationId: ctx.attestation?.attestationId ?? null,
-      attesterId: ctx.attestation?.attesterId ?? null,
+      attestationId: typeof ctx.attestation?.attestationId === "string" ? ctx.attestation.attestationId : null,
+      attesterId: typeof ctx.attestation?.attesterId === "string" ? ctx.attestation.attesterId : null,
       eligible,
       reasonCode,
       flags: ctx.flags,
@@ -167,93 +200,142 @@ export function verifyBid(request: unknown, deps: VerifyBidDeps): BidVerificatio
     };
   };
 
-  // 1. Request shape: exactly {fundId, ipoId, bidAmount}. Extra fields (e.g. a self-declared
-  //    capacity) are rejected, never read.
-  if (
-    !isRecord(request) ||
-    Object.keys(request).sort().join(",") !== REQUEST_KEYS.join(",") ||
-    !isSyntheticId(request["fundId"]) ||
-    !isSyntheticId(request["ipoId"])
-  ) {
-    return finish(BidReason.INVALID_BID_REQUEST);
-  }
-  const { fundId, ipoId, bidAmount } = request as { fundId: string; ipoId: string; bidAmount: unknown };
-  if (!isKrw(bidAmount) || bidAmount === 0n) {
-    return finish(BidReason.INVALID_BID_AMOUNT);
-  }
+  try {
+    // Every dependency is read from `deps` once.
+    const { clock, activeRuleVersion, funds, ipos, participation, attestations, revocations, nonces, attesterVerifier } = deps;
+    const now: unknown = clock.now();
+    if (typeof now !== "number" || !Number.isSafeInteger(now)) return finish(BidReason.DEPENDENCY_ERROR);
+    verifiedAt = now;
+    // The active rule is read once. Only its id is trusted to SELECT a rule; the stale limit comes from
+    // the registered definition, and a caller object whose parameters differ from it is refused below.
+    const active = readActiveRule(activeRuleVersion);
+    const registered = getRegisteredRuleVersion(active.id);
+    ruleVersion = typeof active.id === "string" ? active.id : INVALID_RULE_VERSION_ID;
 
-  // 2. Registries.
-  const fund = deps.funds.getFund(fundId);
-  if (fund === undefined) return finish(BidReason.FUND_NOT_REGISTERED);
-  const ipo = deps.ipos.getIpo(ipoId);
-  if (ipo === undefined) return finish(BidReason.IPO_NOT_FOUND);
-  if (verifiedAt < ipo.subscriptionOpensAt || verifiedAt >= ipo.subscriptionClosesAt) {
-    return finish(BidReason.IPO_NOT_OPEN);
-  }
-  if (!isSupportedRuleVersion(ruleVersion)) return finish(BidReason.RULE_VERSION_UNSUPPORTED);
+    // 1. Request shape: exactly {fundId, ipoId, bidAmount}. Extra fields (e.g. a self-declared
+    //    capacity) are rejected, never read.
+    if (!snap.shapeOk || !isSyntheticId(snap.fundId) || !isSyntheticId(snap.ipoId)) {
+      return finish(BidReason.INVALID_BID_REQUEST);
+    }
+    const fundId = snap.fundId;
+    const ipoId = snap.ipoId;
+    const bidAmount = snap.bidAmount;
+    if (!isKrw(bidAmount) || bidAmount === 0n) {
+      return finish(BidReason.INVALID_BID_AMOUNT);
+    }
 
-  // 3. The bidding fund's own lock. Own UNKNOWN is allowed (not yet recorded); LOCKED is not.
-  if (deps.participation.getState(fundId, ipoId) === ParticipationState.NON_PARTICIPATION_LOCKED) {
-    return finish(BidReason.NON_PARTICIPATION_LOCK_ACTIVE);
-  }
+    // 2. Registries.
+    const fund = funds.getFund(fundId);
+    if (fund === undefined) return finish(BidReason.FUND_NOT_REGISTERED);
+    const ipo = ipos.getIpo(ipoId);
+    if (ipo === undefined) return finish(BidReason.IPO_NOT_FOUND);
+    if (verifiedAt < ipo.subscriptionOpensAt || verifiedAt >= ipo.subscriptionClosesAt) {
+      return finish(BidReason.IPO_NOT_OPEN);
+    }
+    // Unregistered id, or parameters that differ from the registered definition (NaN, Infinity, undefined,
+    // negative, non-integer, or simply a different number): refuse. Object.is so that NaN never matches.
+    if (registered === undefined || !Object.is(active.maxAttestationAgeMs, registered.maxAttestationAgeMs)) {
+      return finish(BidReason.RULE_VERSION_UNSUPPORTED);
+    }
+    const maxAttestationAgeMs = registered.maxAttestationAgeMs;
 
-  // 4. Attestation presence, subject, shape.
-  const attestation = deps.attestations.getAttestation(fundId, ipoId);
-  ctx.attestation = attestation;
-  if (attestation === undefined) return finish(BidReason.ATTESTATION_NOT_FOUND);
-  if (attestation.fundId !== fundId || attestation.ipoId !== ipoId) {
-    return finish(BidReason.ATTESTATION_SUBJECT_MISMATCH);
-  }
-  if (!isWellFormed(attestation)) return finish(BidReason.ATTESTATION_MALFORMED);
-  if (attestation.ruleVersion !== ruleVersion) return finish(BidReason.RULE_VERSION_MISMATCH);
+    // 3. The bidding fund's own lock. Own UNKNOWN is allowed (not yet recorded); LOCKED is not. An answer
+    //    that is not one of the three states (or a lookup that throws) is not "UNKNOWN": it is refused.
+    const ownState = readParticipationState(participation, fundId, ipoId);
+    if (ownState === undefined) return finish(BidReason.PARTICIPATION_LOOKUP_INVALID);
+    if (ownState === ParticipationState.NON_PARTICIPATION_LOCKED) {
+      return finish(BidReason.NON_PARTICIPATION_LOCK_ACTIVE);
+    }
 
-  // 5. Attester authorization and signature, as implemented by the injected verifier
-  //    (Eip712AttestationVerifier checks both; AllowlistAttestationVerifier only authorization).
-  const attester = deps.attesterVerifier.verify(attestation);
-  if (!attester.ok) return finish(attester.reasonCode);
+    // 4. Attestation presence, subject, shape. The attestation is read ONCE into a frozen copy; every
+    //    later check, the verifier, the rule engine and the receipt use that copy only.
+    const fetched = attestations.getAttestation(fundId, ipoId);
+    if (fetched === undefined) return finish(BidReason.ATTESTATION_NOT_FOUND);
+    const attestation = snapshotAttestation(fetched);
+    if (attestation === undefined) return finish(BidReason.ATTESTATION_MALFORMED);
+    ctx.attestation = attestation;
+    if (attestation.fundId !== fundId || attestation.ipoId !== ipoId) {
+      return finish(BidReason.ATTESTATION_SUBJECT_MISMATCH);
+    }
+    if (!isWellFormed(attestation)) return finish(BidReason.ATTESTATION_MALFORMED);
+    if (attestation.ruleVersion !== ruleVersion) return finish(BidReason.RULE_VERSION_MISMATCH);
 
-  // 6. Revocation, validity window, staleness.
-  if (deps.revocations.isRevoked(attestation.attestationId)) return finish(BidReason.ATTESTATION_REVOKED);
-  if (verifiedAt < attestation.issuedAt) return finish(BidReason.ATTESTATION_NOT_YET_VALID);
-  if (verifiedAt >= attestation.expiresAt) return finish(BidReason.ATTESTATION_EXPIRED);
-  if (verifiedAt - attestation.issuedAt > deps.activeRuleVersion.maxAttestationAgeMs) {
-    return finish(BidReason.ATTESTATION_STALE);
-  }
+    // 5. Attester authorization and signature, as implemented by the injected verifier
+    //    (Eip712AttestationVerifier checks both; AllowlistAttestationVerifier only authorization).
+    //    Only an answer with `ok === true` passes (see runVerifier).
+    const attester = runVerifier(attesterVerifier, attestation);
+    if (!attester.ok) return finish(attester.reasonCode);
 
-  // 7. Nonce replay: nonce already bound to a different attestation.
-  const bound = deps.nonces.boundAttestationId(attestation.attesterId, attestation.nonce);
-  if (bound !== undefined && bound !== attestation.attestationId) {
-    return finish(BidReason.ATTESTATION_NONCE_REPLAY);
-  }
+    // 6. Revocation, validity window, staleness.
+    if (revocations.isRevoked(attestation.attestationId)) return finish(BidReason.ATTESTATION_REVOKED);
+    if (verifiedAt < attestation.issuedAt) return finish(BidReason.ATTESTATION_NOT_YET_VALID);
+    if (verifiedAt >= attestation.expiresAt) return finish(BidReason.ATTESTATION_EXPIRED);
+    if (verifiedAt - attestation.issuedAt > maxAttestationAgeMs) {
+      return finish(BidReason.ATTESTATION_STALE);
+    }
 
-  // 8. Completeness: attested exposures must cover exactly the registry's underlying funds.
-  const attested = attestation.underlyingExposures.map((e) => e.fundId);
-  if (new Set(attested).size !== attested.length) return finish(BidReason.DUPLICATE_UNDERLYING_EXPOSURE);
-  const registryIds = new Set(fund.underlyingFundIds);
-  if (fund.underlyingFundIds.some((id) => !attested.includes(id))) {
-    return finish(BidReason.UNDERLYING_EXPOSURE_OMITTED);
-  }
-  if (attested.some((id) => !registryIds.has(id))) {
-    return finish(BidReason.UNDERLYING_EXPOSURE_NOT_IN_REGISTRY);
-  }
+    // 7. Nonce replay: nonce already bound to a different attestation.
+    const bound = nonces.boundAttestationId(attestation.attesterId, attestation.nonce);
+    if (bound !== undefined && bound !== attestation.attestationId) {
+      return finish(BidReason.ATTESTATION_NONCE_REPLAY);
+    }
 
-  // 9. Rule evaluation and the bid check.
-  const evaluation = evaluateRule(ruleVersion, {
-    ipoId,
-    grossCapacityKrw: attestation.grossCapacityKrw,
-    exposures: attestation.underlyingExposures,
-    participation: deps.participation,
-  });
-  if (evaluation === undefined) return finish(BidReason.RULE_VERSION_UNSUPPORTED);
-  if (!evaluation.determined) {
-    return finish(
-      evaluation.cause === UndeterminedCause.ZERO_EXPOSURE_UNKNOWN
-        ? BidReason.UNDERLYING_ZERO_EXPOSURE_UNKNOWN
-        : BidReason.UNDERLYING_PARTICIPATION_UNKNOWN,
-    );
+    // 8. Completeness: attested exposures must cover exactly the registry's underlying funds.
+    const attested = attestation.underlyingExposures.map((e) => e.fundId);
+    if (new Set(attested).size !== attested.length) return finish(BidReason.DUPLICATE_UNDERLYING_EXPOSURE);
+    const registryIds = new Set(fund.underlyingFundIds);
+    if (fund.underlyingFundIds.some((id) => !attested.includes(id))) {
+      return finish(BidReason.UNDERLYING_EXPOSURE_OMITTED);
+    }
+    if (attested.some((id) => !registryIds.has(id))) {
+      return finish(BidReason.UNDERLYING_EXPOSURE_NOT_IN_REGISTRY);
+    }
+
+    // 9. Rule evaluation and the bid check.
+    const evaluation = evaluateRule(ruleVersion, {
+      ipoId,
+      grossCapacityKrw: attestation.grossCapacityKrw,
+      exposures: attestation.underlyingExposures,
+      participation,
+    });
+    if (evaluation === undefined) return finish(BidReason.RULE_VERSION_UNSUPPORTED);
+    if (!evaluation.determined) {
+      return finish(
+        evaluation.cause === UndeterminedCause.ZERO_EXPOSURE_UNKNOWN
+          ? BidReason.UNDERLYING_ZERO_EXPOSURE_UNKNOWN
+          : BidReason.UNDERLYING_PARTICIPATION_UNKNOWN,
+      );
+    }
+    ctx.flags = evaluation.flags;
+    return finish(bidAmount <= evaluation.adjustedCapacityKrw ? BidReason.ELIGIBLE : BidReason.BID_EXCEEDS_ADJUSTED_CAPACITY);
+  } catch {
+    // An injected dependency threw (or `deps` itself is unusable): never an exception, never an eligibility.
+    return finish(BidReason.DEPENDENCY_ERROR);
   }
-  ctx.flags = evaluation.flags;
-  return finish(bidAmount <= evaluation.adjustedCapacityKrw ? BidReason.ELIGIBLE : BidReason.BID_EXCEEDS_ADJUSTED_CAPACITY);
+}
+
+interface RequestSnapshot {
+  /** The request is a plain-looking record with exactly the keys bidAmount, fundId, ipoId. */
+  readonly shapeOk: boolean;
+  readonly fundId: unknown;
+  readonly ipoId: unknown;
+  readonly bidAmount: unknown;
+}
+
+/** Reads `fundId`, `ipoId`, `bidAmount` and the key list once each. A throwing accessor / Proxy trap makes the request invalid (all `undefined`). */
+function snapshotRequest(request: unknown): RequestSnapshot {
+  const invalid: RequestSnapshot = { shapeOk: false, fundId: undefined, ipoId: undefined, bidAmount: undefined };
+  try {
+    if (!isRecord(request)) return invalid;
+    const keys = Object.keys(request).sort().join(",");
+    const r = request;
+    const fundId: unknown = r["fundId"];
+    const ipoId: unknown = r["ipoId"];
+    const bidAmount: unknown = r["bidAmount"];
+    return { shapeOk: keys === REQUEST_KEYS.join(","), fundId, ipoId, bidAmount };
+  } catch {
+    return invalid;
+  }
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -263,6 +345,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function isWellFormed(a: CapacityAttestation): boolean {
   return (
     isKrw(a.grossCapacityKrw) &&
+    typeof a.attestationId === "string" &&
+    typeof a.attesterId === "string" &&
+    typeof a.nonce === "string" &&
+    typeof a.signature === "string" &&
     Number.isSafeInteger(a.issuedAt) &&
     Number.isSafeInteger(a.expiresAt) &&
     a.issuedAt < a.expiresAt &&

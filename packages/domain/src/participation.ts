@@ -56,6 +56,27 @@ export interface ParticipationLookup {
   getState(fundId: FundId, ipoId: IpoId): ParticipationState;
 }
 
+/**
+ * Reads one state through a lookup WITHOUT trusting it: `ParticipationLookup` is a public interface,
+ * so the value is checked at runtime. Returns the state only if it is exactly one of the three
+ * known states; anything else (undefined, null, "", wrong case, padded strings, a thrown error)
+ * returns `undefined`. Callers decide what an invalid answer means (fail closed): rules treat it as
+ * UNKNOWN, `verifyBid` rejects a bidding fund's own invalid answer.
+ */
+export function readParticipationState(lookup: ParticipationLookup, fundId: FundId, ipoId: IpoId): ParticipationState | undefined {
+  let raw: unknown;
+  try {
+    raw = lookup.getState(fundId, ipoId);
+  } catch {
+    return undefined;
+  }
+  return raw === ParticipationState.UNKNOWN ||
+    raw === ParticipationState.PARTICIPATING ||
+    raw === ParticipationState.NON_PARTICIPATION_LOCKED
+    ? raw
+    : undefined;
+}
+
 export interface LedgerEntry {
   readonly seq: number;
   readonly fundId: FundId;
