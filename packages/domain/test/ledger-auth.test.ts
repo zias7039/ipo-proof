@@ -481,7 +481,7 @@ describe("R14: the approver must be independent; the feature fails closed (L-34.
     // A hand-made registry (not built through createPrincipalRegistry) that lets two principals share a key.
     const base = principals();
     const manager = def(base.get("manager_x"));
-    const evilAdmin: Principal = { principalId: "admin_evil", role: PrincipalRole.REGISTRY_ADMIN, address: manager.address, controllerId: "ctrl_admin_evil" };
+    const evilAdmin: Principal = { principalId: "admin_evil", role: PrincipalRole.REGISTRY_ADMIN, address: manager.address, controllerId: "ctrl_admin_evil", keyId: "admin_evil" };
     const reg: PrincipalRegistry = {
       get: (id) => (id === "admin_evil" ? evilAdmin : base.get(id)),
       operator: () => base.operator(),
@@ -541,8 +541,9 @@ describe("fail closed: no throws, hostile input, bad configuration", () => {
     Object.defineProperty(getter, "actorId", { enumerable: true, get: () => { throw new Error("boom"); } });
     expect(sub(w, getter)).toMatchObject({ ok: false });
     expect(sub(w, new Proxy({}, { ownKeys() { throw new Error("boom"); } }))).toMatchObject({ ok: false });
-    for (const type of ["IPO_FINALIZED", "FINDING_ANNOTATED", "MANAGER_KEY_REVOKED"]) {
-      expect(sub(w, { ...(await recordDraft()), eventType: type })).toEqual(rej("EVENT_TYPE_NOT_SUPPORTED"));
+    // a state request relabelled as one of the operator / key events, and a name from no list, are malformed
+    for (const type of ["IPO_FINALIZED", "FINDING_ANNOTATED", "MANAGER_KEY_REVOKED", "ALLOW_ALL"]) {
+      expect(sub(w, { ...(await recordDraft()), eventType: type })).toEqual(rej("EVENT_MALFORMED"));
     }
     expect(w.ledger.events().length).toBe(0);
   });
@@ -562,7 +563,7 @@ describe("fail closed: no throws, hostile input, bad configuration", () => {
   });
 
   it("invalid deployment configuration throws TypeError at construction (not attacker input)", () => {
-    const base = { now: () => NOW, domain: LEDGER_TEST_DOMAIN, principals: principals(), funds: { getFund: () => undefined }, ipos: { getIpo: () => undefined }, registrySeq: 1, ledgerId: LEDGER_TEST_ID, maxRequestTtlMs: TEST_MAX_TTL_MS };
+    const base = { now: () => NOW, domain: LEDGER_TEST_DOMAIN, principals: principals(), funds: { getFund: () => undefined }, ipos: { getIpo: () => undefined }, registrySeq: 1, ledgerId: LEDGER_TEST_ID, maxRequestTtlMs: TEST_MAX_TTL_MS, maxFindingsPerIpo: 50 };
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, name: "ipo-proof CapacityAttestation" } })).toThrow(TypeError);
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, version: "2" } })).toThrow(TypeError);
     expect(() => new AuthorizedLedger({ ...base, domain: { ...LEDGER_TEST_DOMAIN, chainId: 0n } })).toThrow(TypeError);
@@ -595,7 +596,7 @@ describe("fail closed: no throws, hostile input, bad configuration", () => {
 });
 
 describe("R14 unit: approverIsIndependent checks each independence condition on its own (I1..I4)", () => {
-  const mk = (principalId: string, role: Principal["role"], addr: string, controllerId: string): Principal => ({ principalId, role, address: addr, controllerId });
+  const mk = (principalId: string, role: Principal["role"], addr: string, controllerId: string): Principal => ({ principalId, role, address: addr, controllerId, keyId: principalId });
   const A = `0x${"a".repeat(40)}`;
   const B = `0x${"b".repeat(40)}`;
   const C = `0x${"c".repeat(40)}`;

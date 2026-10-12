@@ -33,20 +33,27 @@ export const LEDGER_DOMAIN_NAME = "ipo-proof ParticipationLedger";
 export const LEDGER_DOMAIN_VERSION = "1";
 
 /**
- * `authorization.scheme` values, as in design PR #38 section 2.2.2 (R16). The other two schemes of
- * that table (`EIP712_LEDGER_BID_WITHDRAWAL_V1`, `EIP712_LEDGER_KEY_REVOCATION_V1`) belong to R15 / R18,
- * which this module does not implement, so they are not defined here.
+ * `authorization.scheme` values, as in design PR #38 section 2.2.2 (R16). The remaining scheme of
+ * that table (`EIP712_LEDGER_BID_WITHDRAWAL_V1`) belongs to R15 (bid withdrawal, needs a bid store),
+ * which is not implemented, so it is not defined here.
  */
 export const LedgerScheme = {
   LEDGER_ACTION: "EIP712_LEDGER_ACTION_V1",
   LEDGER_ANNULMENT: "EIP712_LEDGER_ANNULMENT_V1",
   ANNULMENT_APPROVAL: "EIP712_LEDGER_ANNULMENT_APPROVAL_V1",
   OPERATOR_ACTION: "EIP712_LEDGER_OPERATOR_ACTION_V1",
+  KEY_REVOCATION: "EIP712_LEDGER_KEY_REVOCATION_V1",
 } as const;
 export type LedgerScheme = (typeof LedgerScheme)[keyof typeof LedgerScheme];
 
-/** The only operator action this module signs for (IPO_FINALIZED / FINDING_ANNOTATED are not implemented). */
-export const OPERATOR_ACTION_IPO_CLOSED = "IPO_CLOSED";
+/** The `action` strings of `OperatorAction` (design #38 section 3.2). */
+export const OperatorActionName = {
+  IPO_CLOSED: "IPO_CLOSED",
+  IPO_FINALIZED: "IPO_FINALIZED",
+  FINDING_ANNOTATED: "FINDING_ANNOTATED",
+} as const;
+export type OperatorActionName = (typeof OperatorActionName)[keyof typeof OperatorActionName];
+export const OPERATOR_ACTION_IPO_CLOSED = OperatorActionName.IPO_CLOSED;
 
 /** Domain tag of `OperatorAction.payloadDigest` (design #38 section 3.2). */
 export const LEDGER_OPERATOR_PAYLOAD_DOMAIN = "ipo-proof/ledger-operator-payload/v1";
@@ -96,6 +103,14 @@ export const LEDGER_EIP712_TYPES = {
     { name: "requestNonce", type: "string" },
     { name: "expiresAt", type: "uint256" },
   ],
+  // Key revocation is global: it has no ipoId (design #38 section 2.3.2).
+  KeyRevocation: [
+    { name: "actorId", type: "string" },
+    { name: "managerId", type: "string" },
+    { name: "revokedKeyId", type: "string" },
+    { name: "requestNonce", type: "string" },
+    { name: "expiresAt", type: "uint256" },
+  ],
 } as const;
 
 const typeString = (name: keyof typeof LEDGER_EIP712_TYPES): string =>
@@ -105,6 +120,7 @@ const LEDGER_ACTION_TYPE = typeString("LedgerAction");
 const LEDGER_ANNULMENT_TYPE = typeString("LedgerAnnulment");
 const ANNULMENT_APPROVAL_TYPE = typeString("AnnulmentApproval");
 const OPERATOR_ACTION_TYPE = typeString("OperatorAction");
+const KEY_REVOCATION_TYPE = typeString("KeyRevocation");
 
 export interface LedgerActionMessage {
   readonly actorId: string;
@@ -142,6 +158,15 @@ export interface OperatorActionMessage {
   readonly ipoId: string;
   /** `operatorPayloadDigest(...)`: lowercase 0x-prefixed 32-byte hex. */
   readonly payloadDigest: string;
+  readonly requestNonce: string;
+  readonly expiresAt: number;
+}
+
+export interface KeyRevocationMessage {
+  /** Registry administrator principalId. */
+  readonly actorId: string;
+  readonly managerId: string;
+  readonly revokedKeyId: string;
   readonly requestNonce: string;
   readonly expiresAt: number;
 }
@@ -199,6 +224,19 @@ export function hashOperatorAction(m: OperatorActionMessage): Uint8Array {
       encodeString(m.action, "action"),
       encodeString(m.ipoId, "ipoId"),
       encodeBytes32(m.payloadDigest, "payloadDigest"),
+      encodeString(m.requestNonce, "requestNonce"),
+      encodeUint256(m.expiresAt, "expiresAt"),
+    ]),
+  );
+}
+
+export function hashKeyRevocation(m: KeyRevocationMessage): Uint8Array {
+  return keccak_256(
+    concat([
+      typeHash(KEY_REVOCATION_TYPE),
+      encodeString(m.actorId, "actorId"),
+      encodeString(m.managerId, "managerId"),
+      encodeString(m.revokedKeyId, "revokedKeyId"),
       encodeString(m.requestNonce, "requestNonce"),
       encodeUint256(m.expiresAt, "expiresAt"),
     ]),

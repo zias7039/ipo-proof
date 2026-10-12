@@ -8,6 +8,7 @@ import {
   operatorPayloadDigest,
   digestToHex,
   hashAnnulmentApproval,
+  hashKeyRevocation,
   hashLedgerAction,
   hashLedgerAnnulment,
   hashOperatorAction,
@@ -27,6 +28,8 @@ const ANNUL = { actorId: "manager_x", fundId: "fund_x", ipoId: "ipo_1", targetSe
 const APPROVAL = { approverId: "admin_1", annulmentDigest: HASH, requestNonce: "approval_1", expiresAt: 1_900_000_000_000 };
 const OPERATOR = { actorId: "operator_1", action: "IPO_CLOSED", ipoId: "ipo_1", payloadDigest: operatorPayloadDigest({ closesAt: 1_800_086_400_000 }), requestNonce: "close_1", expiresAt: 1_900_000_000_000 };
 
+const REVOCATION = { actorId: "admin_1", managerId: "manager_x", revokedKeyId: "manager_x", requestNonce: "revoke_1", expiresAt: 1_900_000_000_000 };
+
 const big = (m: Record<string, unknown>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, typeof v === "number" ? BigInt(v) : v]));
 
 describe("typed data matches an independent EIP-712 implementation (viem)", () => {
@@ -35,13 +38,17 @@ describe("typed data matches an independent EIP-712 implementation (viem)", () =
     ["LedgerAnnulment", ANNUL, () => hashLedgerAnnulment(ANNUL)],
     ["AnnulmentApproval", APPROVAL, () => hashAnnulmentApproval(APPROVAL)],
     ["OperatorAction", OPERATOR, () => hashOperatorAction(OPERATOR)],
+    ["OperatorAction (IPO_FINALIZED)", { ...OPERATOR, action: "IPO_FINALIZED" }, () => hashOperatorAction({ ...OPERATOR, action: "IPO_FINALIZED" })],
+    ["KeyRevocation", REVOCATION, () => hashKeyRevocation(REVOCATION)],
   ] as const)("%s digest", (name, message, hash) => {
-    expect(digestToHex(ledgerDigest(dom, hash()))).toBe(viemDigest(name, big(message)));
+    expect(digestToHex(ledgerDigest(dom, hash()))).toBe(viemDigest(name === "OperatorAction (IPO_FINALIZED)" ? "OperatorAction" : name, big(message)));
   });
 
   it("the signed fields follow the design (§3.2) and contain no amount, capacity or exposure (principle E)", () => {
     expect(LEDGER_EIP712_TYPES.LedgerAction.map((f) => f.name)).toEqual(["actorId", "fundId", "ipoId", "targetState", "requestNonce", "expiresAt"]);
     expect(LEDGER_EIP712_TYPES.OperatorAction.map((f) => f.name)).toEqual(["actorId", "action", "ipoId", "payloadDigest", "requestNonce", "expiresAt"]);
+    // key revocation is global: no ipoId (design #38 section 2.3.2)
+    expect(LEDGER_EIP712_TYPES.KeyRevocation.map((f) => f.name)).toEqual(["actorId", "managerId", "revokedKeyId", "requestNonce", "expiresAt"]);
     expect(LEDGER_EIP712_TYPES.AnnulmentApproval.map((f) => f.name)).toEqual(["approverId", "annulmentDigest", "requestNonce", "expiresAt"]);
     const names = Object.values(LEDGER_EIP712_TYPES).flatMap((fields) => fields.map((f) => f.name.toLowerCase()));
     for (const n of names) expect(n, n).not.toMatch(/amount|krw|capacity|exposure|salt/);
@@ -72,6 +79,7 @@ describe("domain and type separation", () => {
       LEDGER_ANNULMENT: "EIP712_LEDGER_ANNULMENT_V1",
       ANNULMENT_APPROVAL: "EIP712_LEDGER_ANNULMENT_APPROVAL_V1",
       OPERATOR_ACTION: "EIP712_LEDGER_OPERATOR_ACTION_V1",
+      KEY_REVOCATION: "EIP712_LEDGER_KEY_REVOCATION_V1",
     });
   });
 
@@ -99,6 +107,7 @@ describe("domain and type separation", () => {
       [ANNUL, hashLedgerAnnulment as never],
       [APPROVAL, hashAnnulmentApproval as never],
       [OPERATOR, hashOperatorAction as never],
+      [REVOCATION, hashKeyRevocation as never],
     ];
     for (const [message, hash] of cases) {
       const base = digestToHex(hash(message as never));
@@ -116,8 +125,9 @@ describe("domain and type separation", () => {
       digestToHex(ledgerDigest(dom, hashLedgerAnnulment(ANNUL))),
       digestToHex(ledgerDigest(dom, hashAnnulmentApproval(APPROVAL))),
       digestToHex(ledgerDigest(dom, hashOperatorAction(OPERATOR))),
+      digestToHex(ledgerDigest(dom, hashKeyRevocation(REVOCATION))),
     ];
-    expect(new Set(digests).size).toBe(4);
+    expect(new Set(digests).size).toBe(5);
   });
 
   it("malformed inputs raise Eip712EncodingError from the digest functions (the gate turns them into rejections)", () => {
@@ -159,6 +169,19 @@ describe("principal registry (never throws; bad configuration is a rejection)", 
     for (const entry of bad) expect(createPrincipalRegistry([entry]), JSON.stringify(entry)).toEqual({ ok: false, reasonCode: "PRINCIPAL_CONFIG_INVALID" });
     expect(createPrincipalRegistry([e("op_1", "LEDGER_OPERATOR", a1), e("op_2", "LEDGER_OPERATOR", a2)])).toEqual({ ok: false, reasonCode: "PRINCIPAL_CONFIG_INVALID" });
     expect(createPrincipalRegistry([null as never])).toEqual({ ok: false, reasonCode: "PRINCIPAL_CONFIG_INVALID" });
+  });
+
+  it("each principal has one key id: it defaults to the principalId, is unique over all principals and must be an identifier", () => {
+    const r = createPrincipalRegistry([e("p_1", "FUND_MANAGER", a1), { ...e("p_2", "FUND_MANAGER", a2), keyId: "key_p_2" }]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.registry.get("p_1")?.keyId).toBe("p_1");
+    expect(r.registry.get("p_2")?.keyId).toBe("key_p_2");
+    // a key id equal to another principal's (default) key id, or to another explicit one, is refused
+    expect(createPrincipalRegistry([e("p_1", "FUND_MANAGER", a1), { ...e("p_2", "FUND_MANAGER", a2), keyId: "p_1" }])).toEqual({ ok: false, reasonCode: "PRINCIPAL_DUPLICATE" });
+    expect(createPrincipalRegistry([{ ...e("p_1", "FUND_MANAGER", a1), keyId: "k" }, { ...e("p_2", "FUND_MANAGER", a2), keyId: "k" }])).toEqual({ ok: false, reasonCode: "PRINCIPAL_DUPLICATE" });
+    expect(createPrincipalRegistry([{ ...e("p_1", "FUND_MANAGER", a1), keyId: "Not Synthetic" }])).toEqual({ ok: false, reasonCode: "PRINCIPAL_CONFIG_INVALID" });
+    expect(createPrincipalRegistry([{ ...e("p_1", "FUND_MANAGER", a1), keyId: 5 as never }])).toEqual({ ok: false, reasonCode: "PRINCIPAL_CONFIG_INVALID" });
   });
 
   it("annulment is configured only with an operator and at least one admin that is not the operator (I5)", () => {

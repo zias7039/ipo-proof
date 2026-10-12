@@ -7,7 +7,9 @@
  * (design P14-A06, Q14-N6): independence checks only compare these registered labels, ids and
  * keys. They cannot see one person holding several keys under different labels (T-16).
  *
- * Key rotation, revocation (R9) and quorum are NOT implemented: the registry is static.
+ * Key rotation / registration of a replacement key and quorum (#13) are NOT implemented: the
+ * registry is static. A key can be REVOKED through a MANAGER_KEY_REVOKED event (R9, R18); the
+ * revoked set lives in the ledger, not here, and there is no way to put a new key in its place yet.
  * Creation never throws: bad configuration returns a rejection (fail closed).
  */
 import { normalizeSignerAddress } from "../eip712-encoding.js";
@@ -28,6 +30,12 @@ export interface Principal {
   readonly address: string;
   /** Self-reported label of the party that controls the key. Not verified. */
   readonly controllerId: string;
+  /**
+   * Identifier of this principal's one key, the `revokedKeyId` of a MANAGER_KEY_REVOKED event
+   * (R18). Provisional until the key registry (#13) defines key ids: defaults to the principalId
+   * ("one key per manager"). Unique over all principals.
+   */
+  readonly keyId: string;
 }
 
 export interface PrincipalRegistry {
@@ -58,25 +66,31 @@ export interface PrincipalInput {
   readonly role: string;
   readonly address: string;
   readonly controllerId: string;
+  /** Optional; see `Principal.keyId`. */
+  readonly keyId?: string;
 }
 
 export function createPrincipalRegistry(entries: Iterable<PrincipalInput>): PrincipalRegistryResult {
   const fail = (reasonCode: PrincipalRegistryRejection): PrincipalRegistryResult => ({ ok: false, reasonCode });
   const byId = new Map<string, Principal>();
   const addresses = new Set<string>();
+  const keyIds = new Set<string>();
   try {
     for (const e of entries) {
       if (typeof e !== "object" || e === null) return fail(PrincipalRegistryRejection.PRINCIPAL_CONFIG_INVALID);
       const { principalId, role, address, controllerId } = e;
-      if (!isSyntheticId(principalId) || !isSyntheticId(controllerId) || typeof role !== "string" || !ROLES.includes(role)) {
+      const keyId: unknown = e.keyId === undefined ? principalId : e.keyId;
+      if (!isSyntheticId(principalId) || !isSyntheticId(controllerId) || !isSyntheticId(keyId) || typeof role !== "string" || !ROLES.includes(role)) {
         return fail(PrincipalRegistryRejection.PRINCIPAL_CONFIG_INVALID);
       }
       if (typeof address !== "string") return fail(PrincipalRegistryRejection.PRINCIPAL_CONFIG_INVALID);
       const normalized = normalizeSignerAddress(address); // throws TypeError on bad/zero/bad-checksum
       if (byId.has(principalId)) return fail(PrincipalRegistryRejection.PRINCIPAL_DUPLICATE);
       if (addresses.has(normalized)) return fail(PrincipalRegistryRejection.PRINCIPAL_KEY_REUSE);
-      byId.set(principalId, Object.freeze({ principalId, role: role as PrincipalRole, address: normalized, controllerId }));
+      if (keyIds.has(keyId)) return fail(PrincipalRegistryRejection.PRINCIPAL_DUPLICATE);
+      byId.set(principalId, Object.freeze({ principalId, role: role as PrincipalRole, address: normalized, controllerId, keyId }));
       addresses.add(normalized);
+      keyIds.add(keyId);
     }
   } catch {
     return fail(PrincipalRegistryRejection.PRINCIPAL_CONFIG_INVALID);

@@ -29,6 +29,16 @@ export const LedgerRejection = {
   LEDGER_ANNUL_TARGET_INVALID: "LEDGER_ANNUL_TARGET_INVALID",
   /** A BIND-1 PARTICIPATING record may only be resolved by a bid withdrawal (R12). */
   LEDGER_ANNUL_BOUND_TO_BID: "LEDGER_ANNUL_BOUND_TO_BID",
+  /** IPO_FINALIZED for an IPO without IPO_CLOSED (R19). */
+  IPO_NOT_CLOSED: "IPO_NOT_CLOSED",
+  /** IPO_FINALIZED whose ledgerSeqAtClose / ledgerHeadHashAtClose differ from the IPO's IPO_CLOSED (R19). */
+  LEDGER_FINALIZATION_CUTOFF_MISMATCH: "LEDGER_FINALIZATION_CUTOFF_MISMATCH",
+  /** A second IPO_FINALIZED for the same IPO, whatever its digest (R19). */
+  IPO_ALREADY_FINALIZED: "IPO_ALREADY_FINALIZED",
+  /** FINDING_ANNOTATED whose target is missing, not earlier, hash-mismatched, of another IPO, or itself an annotation (R17). */
+  LEDGER_FINDING_TARGET_INVALID: "LEDGER_FINDING_TARGET_INVALID",
+  /** MANAGER_KEY_REVOKED for a key that is already revoked (R18). */
+  LEDGER_KEY_ALREADY_REVOKED: "LEDGER_KEY_ALREADY_REVOKED",
   /** A correction promised an atomic replacement event that did not directly follow it, or is missing. */
   LEDGER_ANNUL_REPLACEMENT_MISSING: "LEDGER_ANNUL_REPLACEMENT_MISSING",
 } as const;
@@ -49,6 +59,12 @@ interface StateEventInfo {
   readonly bidId: string | undefined;
   annulled: boolean;
 }
+/** What FINDING_ANNOTATED needs to know about every earlier event. */
+interface EventInfo {
+  readonly eventHash: string;
+  readonly ipoId: IpoId | null;
+  readonly eventType: LedgerEventType;
+}
 interface KeyState {
   effective: ParticipationState;
   /** seq of the event that created the current effective state (null if UNKNOWN). */
@@ -68,7 +84,10 @@ const OK: ApplyResult = { ok: true };
 export class LedgerProjection implements ParticipationLookup {
   private readonly keys = new Map<string, KeyState>();
   private readonly stateEvents = new Map<number, StateEventInfo>();
-  private readonly closed = new Map<IpoId, { readonly closedAtSeq: number; readonly ledgerSeqAtClose: number }>();
+  private readonly closed = new Map<IpoId, { readonly closedAtSeq: number; readonly ledgerSeqAtClose: number; readonly ledgerHeadHashAtClose: string }>();
+  private readonly finalized = new Set<IpoId>();
+  private readonly revokedKeys = new Set<string>();
+  private readonly allEvents = new Map<number, EventInfo>();
   private pending: Pending | null = null;
 
   /** Current effective state. UNKNOWN for any pair without a (non-annulled) record. */
@@ -100,6 +119,15 @@ export class LedgerProjection implements ParticipationLookup {
     return this.closed.get(ipoId)?.ledgerSeqAtClose;
   }
 
+  isFinalized(ipoId: IpoId): boolean {
+    return this.finalized.has(ipoId);
+  }
+
+  /** True once a MANAGER_KEY_REVOKED event for exactly this manager and key id is in the log (R9). */
+  isKeyRevoked(managerId: string, keyId: string): boolean {
+    return this.revokedKeys.has(JSON.stringify([managerId, keyId]));
+  }
+
   /** True while a correction's atomic replacement event is still owed. A committed ledger never has this. */
   hasPendingReplacement(): boolean {
     return this.pending !== null;
@@ -110,6 +138,9 @@ export class LedgerProjection implements ParticipationLookup {
     for (const [k, v] of this.keys) c.keys.set(k, { effective: v.effective, currentEventSeq: v.currentEventSeq, history: [...v.history] });
     for (const [k, v] of this.stateEvents) c.stateEvents.set(k, { ...v });
     for (const [k, v] of this.closed) c.closed.set(k, v);
+    for (const v of this.finalized) c.finalized.add(v);
+    for (const v of this.revokedKeys) c.revokedKeys.add(v);
+    for (const [k, v] of this.allEvents) c.allEvents.set(k, v);
     c.pending = this.pending;
     return c;
   }
@@ -119,12 +150,50 @@ export class LedgerProjection implements ParticipationLookup {
     if (this.pending !== null && !this.isOwedReplacement(event, this.pending)) {
       return reject(LedgerRejection.LEDGER_ANNUL_REPLACEMENT_MISSING);
     }
+    const result = this.applyChecked(event);
+    // Only an accepted event is remembered, so a rejected one cannot become an annotation target.
+    if (result.ok) this.allEvents.set(event.seq, { eventHash: event.eventHash, ipoId: event.ipoId, eventType: event.eventType });
+    return result;
+  }
 
+  private applyChecked(event: LedgerEvent): ApplyResult {
     switch (event.eventType) {
+      case LedgerEventType.IPO_FINALIZED: {
+        const closed = this.closed.get(event.ipoId);
+        if (closed === undefined) return reject(LedgerRejection.IPO_NOT_CLOSED);
+        if (
+          event.payload.ledgerSeqAtClose !== closed.ledgerSeqAtClose ||
+          event.payload.ledgerHeadHashAtClose !== closed.ledgerHeadHashAtClose
+        ) {
+          return reject(LedgerRejection.LEDGER_FINALIZATION_CUTOFF_MISMATCH);
+        }
+        if (this.finalized.has(event.ipoId)) return reject(LedgerRejection.IPO_ALREADY_FINALIZED);
+        this.finalized.add(event.ipoId);
+        return OK;
+      }
+      case LedgerEventType.FINDING_ANNOTATED: {
+        const target = this.allEvents.get(event.payload.targetSeq);
+        if (
+          target === undefined ||
+          event.payload.targetSeq >= event.seq ||
+          target.eventHash !== event.payload.targetEventHash ||
+          target.ipoId !== event.ipoId ||
+          target.eventType === LedgerEventType.FINDING_ANNOTATED
+        ) {
+          return reject(LedgerRejection.LEDGER_FINDING_TARGET_INVALID);
+        }
+        return OK; // an annotation never changes any participation state
+      }
+      case LedgerEventType.MANAGER_KEY_REVOKED: {
+        const k = JSON.stringify([event.payload.managerId, event.payload.revokedKeyId]);
+        if (this.revokedKeys.has(k)) return reject(LedgerRejection.LEDGER_KEY_ALREADY_REVOKED);
+        this.revokedKeys.add(k);
+        return OK; // earlier events and states are not touched
+      }
       case LedgerEventType.IPO_CLOSED: {
         if (this.closed.has(event.ipoId)) return reject(LedgerRejection.IPO_ALREADY_CLOSED);
         if (event.payload.ledgerSeqAtClose !== event.seq - 1) return reject(LedgerRejection.LEDGER_CLOSE_SEQ_MISMATCH);
-        this.closed.set(event.ipoId, { closedAtSeq: event.seq, ledgerSeqAtClose: event.payload.ledgerSeqAtClose });
+        this.closed.set(event.ipoId, { closedAtSeq: event.seq, ledgerSeqAtClose: event.payload.ledgerSeqAtClose, ledgerHeadHashAtClose: event.prevHash });
         return OK;
       }
       case LedgerEventType.PARTICIPATION_RECORDED:
