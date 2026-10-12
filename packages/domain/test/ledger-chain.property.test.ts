@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { HashChainedLedger, verifyChain } from "../src/ledger/chain.js";
 import { parseLedgerEvent, parseLedgerEventDraft } from "../src/ledger/events.js";
 import type { LedgerEvent } from "../src/ledger/events.js";
-import { close, lock, newLedger, participate, plain } from "./ledger-fixtures.js";
+import { TEST_CHAIN_ID, close, lock, newLedger, participate, plain } from "./ledger-fixtures.js";
 
 const RUNS = { numRuns: 120 };
 const FUNDS = ["fund_b", "fund_c", "fund_d"] as const;
@@ -50,11 +50,11 @@ describe("정상 체인", () => {
     fc.assert(
       fc.property(ops, (list) => {
         const ledger = build(list);
-        const v = verifyChain(ledger.events());
-        expect(v).toEqual({ ok: true, length: ledger.events().length, headHash: ledger.headHash() });
+        const v = verifyChain(ledger.events(), { ledgerId: TEST_CHAIN_ID });
+        expect(v).toMatchObject({ ok: true, length: ledger.events().length, headHash: ledger.headHash() });
         const again = build(list);
         expect(again.headHash()).toBe(ledger.headHash());
-        const restored = HashChainedLedger.fromEvents(plain(ledger.events()), () => 1_800_000_000_000);
+        const restored = HashChainedLedger.fromEvents(plain(ledger.events()), () => 1_800_000_000_000, { ledgerId: TEST_CHAIN_ID });
         expect(restored.ok).toBe(true);
         if (restored.ok) {
           expect(restored.ledger.headHash()).toBe(ledger.headHash());
@@ -108,7 +108,7 @@ describe("변조 탐지", () => {
         const target = events[i] as Record<string, unknown>;
         const mutate = (mutations[m] as (typeof mutations)[number])[1];
         mutate(target, n);
-        const v = verifyChain(events);
+        const v = verifyChain(events, { ledgerId: TEST_CHAIN_ID });
         expect(v.ok).toBe(false);
         if (!v.ok) expect(v.seq).toBe(i + 1);
       }),
@@ -124,7 +124,7 @@ describe("변조 탐지", () => {
         const payload = (events[i] as Record<string, unknown>)["payload"] as Record<string, unknown>;
         if ("closesAt" in payload) payload["closesAt"] = (payload["closesAt"] as number) + 1;
         else payload["origin"] = payload["origin"] === "INDEPENDENT" ? "BIND_1" : "INDEPENDENT";
-        expect(verifyChain(events).ok).toBe(false);
+        expect(verifyChain(events, { ledgerId: TEST_CHAIN_ID }).ok).toBe(false);
       }),
       RUNS,
     );
@@ -144,16 +144,16 @@ describe("변조 탐지", () => {
           const swapped = [...events];
           swapped[i] = events[j] as Record<string, unknown>;
           swapped[j] = events[i] as Record<string, unknown>;
-          expect(verifyChain(swapped).ok).toBe(false);
+          expect(verifyChain(swapped, { ledgerId: TEST_CHAIN_ID }).ok).toBe(false);
 
           const withoutMiddle = events.filter((_e, k) => k !== a % (n - 1)); // 마지막이 아닌 이벤트 삭제
-          expect(verifyChain(withoutMiddle).ok).toBe(false);
+          expect(verifyChain(withoutMiddle, { ledgerId: TEST_CHAIN_ID }).ok).toBe(false);
 
           const duplicated = [...events.slice(0, i + 1), events[i] as Record<string, unknown>, ...events.slice(i + 1)];
-          expect(verifyChain(duplicated).ok).toBe(false);
+          expect(verifyChain(duplicated, { ledgerId: TEST_CHAIN_ID }).ok).toBe(false);
 
           const inserted = [...events.slice(0, i), events[(i + 1) % n] as Record<string, unknown>, ...events.slice(i)];
-          expect(verifyChain(inserted).ok).toBe(false);
+          expect(verifyChain(inserted, { ledgerId: TEST_CHAIN_ID }).ok).toBe(false);
         },
       ),
       RUNS,
@@ -165,7 +165,7 @@ describe("변조 탐지", () => {
       fc.property(
         ops.filter((list) => build(list).events().length >= 2),
         (list) => {
-          const v = verifyChain(chainOf(list).slice(1));
+          const v = verifyChain(chainOf(list).slice(1), { ledgerId: TEST_CHAIN_ID });
           expect(v.ok).toBe(false);
         },
       ),
@@ -180,7 +180,7 @@ describe("끝부분 잘라내기: 체크포인트 없이는 탐지되지 않고,
       fc.property(ops, fc.nat(), (list, cut) => {
         const events = chainOf(list);
         const k = cut % (events.length + 1);
-        const v = verifyChain(events.slice(0, k));
+        const v = verifyChain(events.slice(0, k), { ledgerId: TEST_CHAIN_ID });
         expect(v.ok).toBe(true);
         if (v.ok) expect(v.length).toBe(k);
       }),
@@ -195,10 +195,10 @@ describe("끝부분 잘라내기: 체크포인트 없이는 탐지되지 않고,
         fc.nat(),
         (list, cut) => {
           const events = chainOf(list);
-          const full = verifyChain(events);
+          const full = verifyChain(events, { ledgerId: TEST_CHAIN_ID });
           if (!full.ok) throw new Error("fixture chain must verify");
           const k = cut % events.length; // 0..n-1: 최소 1개 이상 제거
-          const truncated = verifyChain(events.slice(0, k));
+          const truncated = verifyChain(events.slice(0, k), { ledgerId: TEST_CHAIN_ID });
           expect(truncated.ok).toBe(true);
           if (truncated.ok) {
             expect(truncated.length).not.toBe(full.length);
@@ -217,7 +217,7 @@ describe("어떤 입력에서도 던지지 않고, 거부된 요청은 체인을
   it("verifyChain / parseLedgerEvent / parseLedgerEventDraft 는 임의의 값에 대해 던지지 않고 ok=false를 돌려준다", () => {
     fc.assert(
       fc.property(junkList, (events) => {
-        expect(verifyChain(events as never).ok).toBe(events.length === 0);
+        expect(verifyChain(events as never, { ledgerId: TEST_CHAIN_ID }).ok).toBe(events.length === 0);
         for (const e of events) {
           expect(parseLedgerEvent(e).ok).toBe(false);
           expect(parseLedgerEventDraft(e).ok).toBe(false);
@@ -239,7 +239,7 @@ describe("어떤 입력에서도 던지지 않고, 거부된 요청은 체인을
         expect(ledger.appendAtomic(junk).ok).toBe(false);
         expect(ledger.headHash()).toBe(head);
         expect(ledger.events().length).toBe(length);
-        expect(HashChainedLedger.fromEvents(junk, () => 1).ok).toBe(junk.length === 0);
+        expect(HashChainedLedger.fromEvents(junk, () => 1, { ledgerId: TEST_CHAIN_ID }).ok).toBe(junk.length === 0);
       }),
       RUNS,
     );
@@ -297,7 +297,7 @@ describe("원장의 상태 전이 제약은 체인 위에서도 유지된다", (
  * ---------------------------------------------------------------------------------------- */
 describe("알려진 결함 (#37)", () => {
   // 한국어 설명: events()가 내부 배열을 그대로 돌려줘서, 호출자가 pop()하면 로그와 파생 상태가 갈라진다.
-  it.fails("[#37 §2] events()가 돌려준 배열을 바꿔도 원장 내부 로그는 바뀌지 않아야 한다", () => {
+  it("[#37 §2] events()가 돌려준 배열을 바꿔도 원장 내부 로그는 바뀌지 않아야 한다", () => {
     const { ledger } = newLedger();
     ledger.append(participate("fund_b"));
     ledger.append(lock("fund_c"));
