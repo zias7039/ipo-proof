@@ -344,7 +344,7 @@ describe("규칙 버전 선택은 fail-closed", () => {
  * ---------------------------------------------------------------------------------------- */
 describe("알려진 결함 (#36)", () => {
   // 한국어 설명: maxAttestationAgeMs가 NaN/Infinity/undefined이면 stale 검사가 꺼져 1000시간 전 어테스테이션이 통과한다.
-  it.fails("[#36 §1] 이상한 maxAttestationAgeMs(NaN, Infinity, undefined)로 stale 검사가 꺼지면 안 된다", () => {
+  it("[#36 §1] 이상한 maxAttestationAgeMs(NaN, Infinity, undefined)로 stale 검사가 꺼지면 안 된다", () => {
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, undefined]) {
       const e = makeEnv({
         rule: { ...DEMO_RULE_V1, maxAttestationAgeMs: bad as number },
@@ -355,7 +355,7 @@ describe("알려진 결함 (#36)", () => {
   });
 
   // 한국어 설명: 본인 펀드의 락 조회는 정규화 없이 === 비교라, 락을 잘못 표기한 값(소문자, 공백 포함 등)이면 통과한다.
-  it.fails("[#36 §3] 본인 펀드의 조회 값이 예상 밖(락처럼 보이는 변형 포함)이면 적격이 되면 안 된다", () => {
+  it("[#36 §3] 본인 펀드의 조회 값이 예상 밖(락처럼 보이는 변형 포함)이면 적격이 되면 안 된다", () => {
     const e = makeEnv();
     for (const raw of ["non_participation_locked", " NON_PARTICIPATION_LOCKED", undefined, null]) {
       const participation: ParticipationLookup = { getState: (fundId, ipoId) => (fundId === "fund_a" ? (raw as never) : e.ledger.getState(fundId, ipoId)) };
