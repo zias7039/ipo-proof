@@ -5,7 +5,7 @@ import { LedgerProjection } from "../src/ledger/derive.js";
 import { DEMO_RULE_V1 } from "../src/rules.js";
 import { verifyBid } from "../src/verify.js";
 import { makeEnv } from "./fixtures.js";
-import { annul, close, lock, must, newLedger, participate, participateBound, plain, def } from "./ledger-fixtures.js";
+import { TEST_CHAIN_ID, annul, close, lock, must, newLedger, participate, participateBound, plain, def } from "./ledger-fixtures.js";
 
 const rejected = (reasonCode: string) => ({ ok: false, reasonCode });
 
@@ -147,7 +147,7 @@ describe("EVENT_ANNULLED corrections (design L-22..L-33)", () => {
     expect(ledger.getStateAt("fund_x", "ipo_1", 5)).toBe("PARTICIPATING");
     expect(ledger.getStateAt("fund_x", "ipo_1", 6)).toBe("UNKNOWN");
     expect(ledger.events()[4]).toBe(p);
-    expect(verifyChain(plain(ledger.events()))).toMatchObject({ ok: true, length: 6 });
+    expect(verifyChain(plain(ledger.events()), { ledgerId: TEST_CHAIN_ID })).toMatchObject({ ok: true, length: 6 });
   });
 
   it("after a correction a fresh record is possible, and then a correction again (new target), but not of the stale target", () => {
@@ -192,7 +192,7 @@ describe("EVENT_ANNULLED corrections (design L-22..L-33)", () => {
     expect(added[1]?.prevHash).toBe(added[0]?.eventHash);
     expect(ledger.getState("fund_x", "ipo_1")).toBe("NON_PARTICIPATION_LOCKED");
     expect(ledger.getStateAt("fund_x", "ipo_1", 6)).toBe("UNKNOWN");
-    expect(verifyChain(plain(ledger.events())).ok).toBe(true);
+    expect(verifyChain(plain(ledger.events()), { ledgerId: TEST_CHAIN_ID }).ok).toBe(true);
   });
 
   it("atomicity: a lone correction that owes a replacement, a wrong replacement, or a bad second draft add NOTHING (L-29)", () => {
@@ -216,7 +216,7 @@ describe("EVENT_ANNULLED corrections (design L-22..L-33)", () => {
     const { ledger, p } = withP();
     must(ledger.appendAtomic([annul(p, { replacement: "NON_PARTICIPATION_LOCKED" }), lock("fund_x")]));
     const events = plain(ledger.events());
-    expect(verifyChain(events.slice(0, 6))).toEqual({ ok: false, seq: 6, reasonCode: "LEDGER_ANNUL_REPLACEMENT_MISSING" });
+    expect(verifyChain(events.slice(0, 6), { ledgerId: TEST_CHAIN_ID })).toEqual({ ok: false, seq: 6, reasonCode: "LEDGER_ANNUL_REPLACEMENT_MISSING" });
   });
 
   it("a correction needs exactly one approver co-signature (bid withdrawals none); shape only, signatures are not verified here", () => {
